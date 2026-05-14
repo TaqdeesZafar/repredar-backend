@@ -39,7 +39,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         const { email, password } = req.body;
 
         const user = await User.findOne({ email });
-        if (!user) {
+        if (!user || !user.password) {
             res.status(400).json({ error: "Invalid email or password" });
             return;
         }
