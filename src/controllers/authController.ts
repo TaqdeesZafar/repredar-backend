@@ -131,7 +131,6 @@ export const guestToken = async (req: Request, res: Response): Promise<void> => 
             user = new User({
                 name: "Guest User",
                 email: email,
-                freeReports: 1 // Give guests 1 free report
             });
             await user.save();
             

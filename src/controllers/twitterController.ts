@@ -1,11 +1,9 @@
 import axios from 'axios';
 import { Request, Response } from 'express';
 import dotenv from 'dotenv';
-import { analyzeAndCombineData } from "../utils/getFreeReport"
-import { generateFreePdfReport , generatePaidPdfReport } from '../utils/generatePdfReport';
+import { generatePaidPdfReport } from '../utils/generatePdfReport';
 import { analyzeAndCombinePaidData } from '../utils/getPaidReport';
 import Report from '../models/Report';
-import User from '../models/User';
 
 dotenv.config();
 
@@ -122,7 +120,6 @@ export const fetchAndAnalyzeTweets = async (req: Request, res: Response): Promis
         res.status(400).json({ message: 'Missing required query parameter: query' });
         return;
       }
-      const isPaidReport = req.headers['x-report-type'] === 'paid';
       const platform = req.headers['x-report-platform'] as string;
 
 
@@ -163,162 +160,69 @@ export const fetchAndAnalyzeTweets = async (req: Request, res: Response): Promis
 
       const combinedText = combinedMentions + ' ' + tweetReplies;
 
-      let Result = {}
-      if (!isPaidReport){
-        Result = await analyzeAndCombineData(combinedText, query.toString(), 'X' );
-      }
-      else if (isPaidReport){
-        Result = await analyzeAndCombinePaidData(combinedText, query.toString(), platform);
-      }
+      const Result = await analyzeAndCombinePaidData(combinedText, query.toString(), platform || 'X');
 
-      res.json(Result);  
+      res.json(Result);
     } catch (error) {
       console.error('Error fetching data from external APIs:', error);
       res.status(500).json({ message: 'Failed to fetch data from external APIs' });
     }
   };
 
-  export const generateFreeReport = async (req: Request, res: Response): Promise<void> => {
-    try {
-      const { query } = req.query;
-  
-      if (!query) {
-        res.status(400).json({ message: 'Missing required query parameter: query' });
-        return;
-      }
-      
-      const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
-      if (!userId) {
-        res.status(401).json({ message: 'User not authenticated' });
-        return;
-      }
-  
-      const user = await User.findById(userId);
-      if (!user) {
-        res.status(404).json({ message: 'User not found' });
-        return;
-      }
-  
-      const FREE_REPORT_LIMIT = 2;
-      const isSpecialUser = user.email === "repradarhelp@gmail.com" || user.email === "directoresarpk@gmail.com" || user.email === "davidwom369@gmail.com" || user.email === "thoffexpert@gmail.com" || user.email === "noor@gmail.com";
-  
-      if (!isSpecialUser && user.freeReports >= FREE_REPORT_LIMIT) {
-        res.status(403).json({ message: 'You have reached the free report limit' });
-        return 
-      }
+export const generateReport = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { query } = req.query;
 
-      const apiUrl = twitterData;
-      if (!apiUrl) {
-        res.status(500).json({ message: 'API URL for Twitter is not defined in .env' });
-        return;
-      }
-      const response = await axios.get(`${apiUrl}?query=${query}&search_type=Latest`);
-  
-      const data = response.data;
-  
-      if (!data) {
-        res.status(404).json({ message: 'No data found for the given query' });
-        return;
-      }
-  
-      const pdfBuffer = await generateFreePdfReport(data);
-
-      const report = new Report({
-        name: `${query} - ${new Date().toISOString()}`,
-        pdf: pdfBuffer,
-        user: userId,
-        platform: 'X',
-        type: 'free',
-      });
-      await report.save();
-
-      if (!isSpecialUser) {
-        user.freeReports += 1;
-        await user.save();
-      }
-  
-      res.setHeader('Content-Disposition', 'attachment; filename="sentiment_report.pdf"');
-      res.setHeader('Content-Type', 'application/pdf');
-      res.end(pdfBuffer);
-  
-    } catch (error) {
-      console.error('Error fetching data or generating PDF:', error);
-      res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
+    if (!query) {
+      res.status(400).json({ message: 'Missing required query parameter: query' });
+      return;
     }
-  };
 
-  export const generatePaidReport = async (req: Request, res: Response): Promise<void> => {
-    try {
-      const { query } = req.query;
-  
-      if (!query) {
-        res.status(400).json({ message: 'Missing required query parameter: query' });
-        return;
-      }
-      
-      const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id ;
-      if (!userId) {
-        res.status(401).json({ message: 'User not authenticated' });
-        return;
-      }
-  
-      const user = await User.findById(userId);
-      if (!user) {
-        res.status(404).json({ message: 'User not found' });
-        return;
-      }
-  
-      const requiredTokens = 5;
-      const isSpecialUser = user.email === "repradarhelp@gmail.com" || user.email === "directoresarpk@gmail.com" || user.email === "davidwom369@gmail.com" || user.email === "thoffexpert@gmail.com" || user.email === "noor@gmail.com";
-
-      if (!isSpecialUser && user.tokens < requiredTokens) {
-        res.status(403).json({ message: 'Not enough tokens to generate paid report' });
-        return;
-      }
-  
-      const apiUrl = twitterData;
-      if (!apiUrl) {
-        res.status(500).json({ message: 'API URL for Twitter is not defined in .env' });
-        return;
-      }
-      const headers = {
-        ...twitterHeaders,
-        'x-report-type': 'paid',
-        'x-report-platform': 'X',
-      };
-
-      const response = await axios.get(`${apiUrl}?query=${query}&search_type=Latest`, { headers });
-  
-      const data = response.data;
-  
-      if (!data) {
-        res.status(404).json({ message: 'No data found for the given query' });
-        return;
-      }
-      const pdfBuffer = await generatePaidPdfReport(data);
-
-      const report = new Report({
-        name: `${query} - ${new Date().toISOString()}`,
-        pdf: pdfBuffer,
-        user: userId,
-        platform: 'X',
-        type: 'paid',
-      });
-      await report.save();
-
-      if (!isSpecialUser) {
-        user.tokens -= requiredTokens;
-        await user.save();
-      }
-
-      res.setHeader('Content-Disposition', 'attachment; filename="paid_sentiment_report.pdf"');
-      res.setHeader('Content-Type', 'application/pdf');
-      res.end(pdfBuffer);
-  
-    } catch (error) {
-      console.error('Error fetching data or generating PDF:', error);
-      res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
+    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
+    if (!userId) {
+      res.status(401).json({ message: 'User not authenticated' });
+      return;
     }
-  };
+
+    const apiUrl = twitterData;
+    if (!apiUrl) {
+      res.status(500).json({ message: 'API URL for Twitter is not defined in .env' });
+      return;
+    }
+
+    const headers = {
+      ...twitterHeaders,
+      'x-report-type': 'paid',
+      'x-report-platform': 'X',
+    };
+
+    const response = await axios.get(`${apiUrl}?query=${query}&search_type=Latest`, { headers });
+    const data = response.data;
+
+    if (!data) {
+      res.status(404).json({ message: 'No data found for the given query' });
+      return;
+    }
+
+    const pdfBuffer = await generatePaidPdfReport(data);
+
+    const report = new Report({
+      name: `${query} - ${new Date().toISOString()}`,
+      pdf: pdfBuffer,
+      user: userId,
+      platform: 'X',
+      type: 'report',
+    });
+    await report.save();
+
+    res.setHeader('Content-Disposition', 'attachment; filename="reputation_report.pdf"');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.end(pdfBuffer);
+
+  } catch (error) {
+    console.error('Error fetching data or generating PDF:', error);
+    res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
+  }
+};
 
   

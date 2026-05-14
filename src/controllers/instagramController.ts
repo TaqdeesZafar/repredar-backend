@@ -1,11 +1,9 @@
 import axios from 'axios';
 import { Request, Response } from 'express';
 import dotenv from 'dotenv';
-import { analyzeAndCombineData } from "../utils/getFreeReport"
-import { generateFreePdfReport , generatePaidPdfReport } from '../utils/generatePdfReport';
+import { generatePaidPdfReport } from '../utils/generatePdfReport';
 import { analyzeAndCombinePaidData } from '../utils/getPaidReport';
 import Report from '../models/Report';
-import User from '../models/User';
 
 dotenv.config();
 
@@ -136,31 +134,23 @@ export const fetchPostsReplies = async (postIds: string[]) => {
             res.status(400).json({ message: 'Missing required query parameter: query' });
             return;
           }
-          const isPaidReport = req.headers['x-report-type'] === 'paid';
           const platform = req.headers['x-report-platform'] as string;
-    
-    
+
           const formatedQuery = query.toString().replace(/^@/, '');
-    
+
           const { postIds, isPrivate } = await fetchPostsById(formatedQuery);
           if (isPrivate) {
-            res.status(404).json({ 
+            res.status(404).json({
               message: 'The profile/page you are trying to fetch is set to private or has no accessible posts',
               error: 'PRIVATE_PROFILE'
             });
-            return; 
+            return;
           }
-    
+
           const PostReplies = await fetchPostsReplies(postIds);
-        
-          let Result = {}
-          if (!isPaidReport){
-            Result = await analyzeAndCombineData(PostReplies, query.toString(), 'Instagram' );
-          }
-          else if (isPaidReport){
-            Result = await analyzeAndCombinePaidData(PostReplies, query.toString(), platform);
-          }
-    
+
+          const Result = await analyzeAndCombinePaidData(PostReplies, query.toString(), platform || 'Instagram');
+
           res.json(Result);  
         } catch (error) {
           console.error('Error fetching data from external APIs:', error);
@@ -169,161 +159,67 @@ export const fetchPostsReplies = async (postIds: string[]) => {
       };
     
 
-      export const generateFreeReport = async (req: Request, res: Response): Promise<void> => {
-        try {
-          const { query } = req.query;
-      
-          if (!query) {
-            res.status(400).json({ message: 'Missing required query parameter: query' });
-            return;
-          }
-          
-          const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
-          if (!userId) {
-            res.status(401).json({ message: 'User not authenticated' });
-            return;
-          }
-      
-          const user = await User.findById(userId);
-          if (!user) {
-            res.status(404).json({ message: 'User not found' });
-            return;
-          }
-      
-          const FREE_REPORT_LIMIT = 2;
-          const isSpecialUser = user.email === "repradarhelp@gmail.com" || user.email === "directoresarpk@gmail.com" || user.email === "davidwom369@gmail.com" || user.email === "thoffexpert@gmail.com" || user.email === "noor@gmail.com";
-      
-          if (!isSpecialUser && user.freeReports >= FREE_REPORT_LIMIT) {
-            res.status(403).json({ message: 'You have reached the free report limit' });
-            return 
-          }
-    
-          const apiUrl = instagramData;
-          if (!apiUrl) {
-            res.status(500).json({ message: 'API URL for Instagram is not defined in .env' });
-            return;
-          }
-          const response = await axios.get(`${apiUrl}?query=${query}`);
-      
-          const data = response.data;
-      
-          if (!data) {
-            res.status(404).json({ message: 'No data found for the given query' });
-            return;
-          }
-      
-          const pdfBuffer = await generateFreePdfReport(data);
-    
-          const report = new Report({
-            name: `${query} - ${new Date().toISOString()}`,
-            pdf: pdfBuffer,
-            user: userId,
-            platform: 'Instagram',
-            type: 'free',
-          });
-          await report.save();
-    
-          if (!isSpecialUser) {
-            user.freeReports += 1;
-            await user.save();
-          }
-      
-          res.setHeader('Content-Disposition', 'attachment; filename="sentiment_report.pdf"');
-          res.setHeader('Content-Type', 'application/pdf');
-          res.end(pdfBuffer);
-      
-        } catch (error: any) {
-          if (error.response && error.response.status === 404 && error.response.data?.error === 'PRIVATE_PROFILE') {
-            res.status(404).json({
-              message: error.response.data.message,
-              error: error.response.data.error
-            });
-            return;
-          }
-          console.error('Error fetching data or generating PDF:', error);
-          res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
-        }
-      };
-    
-      export const generatePaidReport = async (req: Request, res: Response): Promise<void> => {
-        try {
-          const { query } = req.query;
-      
-          if (!query) {
-            res.status(400).json({ message: 'Missing required query parameter: query' });
-            return;
-          }
-          
-          const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id ;
-          if (!userId) {
-            res.status(401).json({ message: 'User not authenticated' });
-            return;
-          }
-      
-          const user = await User.findById(userId);
-          if (!user) {
-            res.status(404).json({ message: 'User not found' });
-            return;
-          }
-      
-          const requiredTokens = 5;
-          const isSpecialUser = user.email === "repradarhelp@gmail.com" || user.email === "directoresarpk@gmail.com" || user.email === "davidwom369@gmail.com" || user.email === "thoffexpert@gmail.com" || user.email === "noor@gmail.com";
-    
-          if (!isSpecialUser && user.tokens < requiredTokens) {
-            res.status(403).json({ message: 'Not enough tokens to generate paid report' });
-            return;
-          }
-      
-          const apiUrl = instagramData;
-          if (!apiUrl) {
-            res.status(500).json({ message: 'API URL for Instagram is not defined in .env' });
-            return;
-          }
-          const headers = {
-            ...instagramHeaders,
-            'x-report-type': 'paid',
-            'x-report-platform': 'Instagram',
-          };
-    
-          const response = await axios.get(`${apiUrl}?query=${query}`, { headers });
-      
-          const data = response.data;
-      
-          if (!data) {
-            res.status(404).json({ message: 'No data found for the given query' });
-            return;
-          }
-          const pdfBuffer = await generatePaidPdfReport(data);
-    
-          const report = new Report({
-            name: `${query} - ${new Date().toISOString()}`,
-            pdf: pdfBuffer,
-            user: userId,
-            platform: 'Instagram',
-            type: 'paid',
-          });
-          await report.save();
-    
-          if (!isSpecialUser) {
-            user.tokens -= requiredTokens;
-            await user.save();
-          }
-    
-          res.setHeader('Content-Disposition', 'attachment; filename="paid_sentiment_report.pdf"');
-          res.setHeader('Content-Type', 'application/pdf');
-          res.end(pdfBuffer);
-      
-        } catch (error: any) {
-          if (error.response && error.response.status === 404 && error.response.data?.error === 'PRIVATE_PROFILE') {
-            res.status(404).json({
-              message: error.response.data.message,
-              error: error.response.data.error
-            });
-            return;
-          }
-          console.error('Error fetching data or generating PDF:', error);
-          res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
-        }
-      };
+export const generateReport = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { query } = req.query;
+
+    if (!query) {
+      res.status(400).json({ message: 'Missing required query parameter: query' });
+      return;
+    }
+
+    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
+    if (!userId) {
+      res.status(401).json({ message: 'User not authenticated' });
+      return;
+    }
+
+    const apiUrl = instagramData;
+    if (!apiUrl) {
+      res.status(500).json({ message: 'API URL for Instagram is not defined in .env' });
+      return;
+    }
+
+    const headers = {
+      ...instagramHeaders,
+      'x-report-type': 'paid',
+      'x-report-platform': 'Instagram',
+    };
+
+    const response = await axios.get(`${apiUrl}?query=${query}`, { headers });
+    const data = response.data;
+
+    if (!data) {
+      res.status(404).json({ message: 'No data found for the given query' });
+      return;
+    }
+
+    const pdfBuffer = await generatePaidPdfReport(data);
+
+    const report = new Report({
+      name: `${query} - ${new Date().toISOString()}`,
+      pdf: pdfBuffer,
+      user: userId,
+      platform: 'Instagram',
+      type: 'report',
+    });
+    await report.save();
+
+    res.setHeader('Content-Disposition', 'attachment; filename="reputation_report.pdf"');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.end(pdfBuffer);
+
+  } catch (error: any) {
+    if (error.response && error.response.status === 404 && error.response.data?.error === 'PRIVATE_PROFILE') {
+      res.status(404).json({
+        message: error.response.data.message,
+        error: error.response.data.error
+      });
+      return;
+    }
+    console.error('Error fetching data or generating PDF:', error);
+    res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
+  }
+};
     
       

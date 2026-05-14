@@ -1,11 +1,9 @@
 import axios from 'axios';
 import { Request, Response } from 'express';
 import dotenv from 'dotenv';
-import { analyzeAndCombineCrossPlatformData } from "../utils/getFreeReport"
-import { generateFreePdfReport, generatePaidPdfReport } from '../utils/generatePdfReport';
+import { generatePaidPdfReport } from '../utils/generatePdfReport';
 import { analyzeAndCombinePaidCrossPlatformData } from '../utils/getPaidReport';
 import Report from '../models/Report';
-import User from '../models/User';
 
 
 
@@ -441,7 +439,6 @@ export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise
   try {
     const { twitter, linkedin, tiktok, facebook, instagram, query } = req.query; 
     const platform = req.headers['x-report-platform'] as string;
-    const isPaidReport = req.headers['x-report-type'] === 'paid'; 
 
     if (!twitter && !linkedin && !tiktok && !facebook && !instagram) {
       res.status(400).json({ message: 'Missing required query parameters: twitter, linkedin, tiktok, facebook, or instagram' });
@@ -493,14 +490,7 @@ export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise
     console.log('dictionary.facebook:', dictionary.facebook);
     console.log('dictionary.facebook length:', dictionary.facebook ? dictionary.facebook.length : 'undefined');
 
-    let result;
-    if (!isPaidReport) {
-      console.log('Calling analyzeAndCombineCrossPlatformData with query:', query);
-      result = await analyzeAndCombineCrossPlatformData(dictionary, query as string, 'Cross Platform'); 
-    } else {
-      console.log('Calling analyzeAndCombinePaidCrossPlatformData with query:', query, 'and platform:', platform);
-      result = await analyzeAndCombinePaidCrossPlatformData(dictionary, query as string, platform); 
-    }
+    const result = await analyzeAndCombinePaidCrossPlatformData(dictionary, query as string, platform || 'Cross Platform');
     res.json(result);
 
   } catch (error) {
@@ -530,148 +520,22 @@ export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise
 
 
 
-export const generateFreeReport = async (req: Request, res: Response): Promise<void> => {
+export const generateReport = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { twitter, linkedin, tiktok, facebook, instagram, query } = req.query; 
+    const { twitter, linkedin, tiktok, facebook, instagram, query } = req.query;
 
     if (!twitter && !linkedin && !tiktok && !facebook && !instagram) {
       res.status(400).json({ message: 'Missing required query parameters: twitter, linkedin, tiktok, facebook, or instagram' });
       return;
     }
-    
+
     const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
     if (!userId) {
       res.status(401).json({ message: 'User not authenticated' });
       return;
     }
 
-    const user = await User.findById(userId);
-    if (!user) {
-      res.status(404).json({ message: 'User not found' });
-      return;
-    }
-
-    const FREE_REPORT_LIMIT = 2;
-    const isSpecialUser = user.email === "repradarhelp@gmail.com" || user.email === "directoresarpk@gmail.com" || user.email === "davidwom369@gmail.com" || user.email === "thoffexpert@gmail.com" || user.email === "noor@gmail.com";
-
-    if (!isSpecialUser && user.freeReports >= FREE_REPORT_LIMIT) {
-      res.status(403).json({ message: 'You have reached the free report limit' });
-      return 
-    }
-
     const queryParams: string[] = [];
-
-    if (twitter) queryParams.push(`twitter=${twitter}`);
-    if (linkedin) queryParams.push(`linkedin=${linkedin}`);
-    if (tiktok) queryParams.push(`tiktok=${tiktok}`);
-    if (facebook) queryParams.push(`facebook=${facebook}`);
-    if (instagram) queryParams.push(`instagram=${instagram}`);
-    if (req.query.facebookType) queryParams.push(`facebookType=${req.query.facebookType}`);
-
-    const queryString = queryParams.join('&');
-    const apiUrl = crossPlatformData;
-    if (!apiUrl) {
-      res.status(500).json({ message: 'API URL is not defined in .env' });
-      return;
-    }
-    const response = await axios.get(`${apiUrl}?${queryString}&query=${query}`, {
-      headers: {
-        'x-report-type': 'free',
-        'x-report-platform': 'Cross Platform',
-        ...(req.query.facebookType && { 'x-facebook-type': req.query.facebookType as string })
-      }
-    });
-
-    const data = response.data;
-    console.log("data passed to report", data)
-
-    if (!data) {
-      res.status(404).json({ message: 'No data found for the given query' });
-      return;
-    }
-
-    const pdfBuffer = await generateFreePdfReport(data);
-    const report = new Report({
-      name: `${query} - ${new Date().toISOString()}`,
-      pdf: pdfBuffer,
-      user: userId,
-      platform: 'Cross Platform',
-      type: 'free',
-    });
-    await report.save();
-
-    if (!isSpecialUser) {
-      user.freeReports += 1;
-      await user.save();
-    }
-      
-    res.setHeader('Content-Disposition', 'attachment; filename="paid_sentiment_report.pdf"');
-    res.setHeader('Content-Type', 'application/pdf');
-    res.end(pdfBuffer);
-
-  } catch (error: any) {
-    console.error('Error in generateFreeReport:', error);
-    console.error('Error message:', error.message);
-    console.error('Error response:', error.response?.data);
-    console.error('Error status:', error.response?.status);
-    
-    // Forward PRIVATE_PROFILE error from internal API to frontend
-    if (error.response && error.response.status === 404 && error.response.data?.error === 'PRIVATE_PROFILE') {
-      console.log('PRIVATE_PROFILE error from API response detected');
-      res.status(404).json({
-        message: error.response.data.message,
-        error: error.response.data.error
-      });
-      return;
-    }
-    
-    // Handle direct PRIVATE_PROFILE error
-    if (error.message === 'PRIVATE_PROFILE') {
-      console.log('Direct PRIVATE_PROFILE error detected');
-      res.status(404).json({
-        message: 'The profile you are trying to fetch is set to private or has no accessible posts',
-        error: 'PRIVATE_PROFILE'
-      });
-      return;
-    }
-    
-    console.error('Error fetching data or generating PDF:', error);
-    res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
-  }
-};
-
-export const generatePaidReport = async (req: Request, res: Response): Promise<void> => {
-  try {
-    
-    const { twitter, linkedin, tiktok, facebook, instagram, query } = req.query; 
-
-    if (!twitter && !linkedin && !tiktok && !facebook && !instagram) {
-      res.status(400).json({ message: 'Missing required query parameters: twitter, linkedin, tiktok, facebook, or instagram' });
-      return;
-    }
-    
-    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id ;
-    if (!userId) {
-      res.status(401).json({ message: 'User not authenticated' });
-      return;
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      res.status(404).json({ message: 'User not found' });
-      return;
-    }
-
-    const requiredTokens = 5;
-    const isSpecialUser = user.email === "repradarhelp@gmail.com" || user.email === "directoresarpk@gmail.com" || user.email === "davidwom369@gmail.com" || user.email === "thoffexpert@gmail.com" || user.email === "noor@gmail.com";
-
-    if (!isSpecialUser && user.tokens < requiredTokens) {
-      res.status(403).json({ message: 'Not enough tokens to generate paid report' });
-      return;
-    }
-
-    const queryParams: string[] = [];
-
     if (twitter) queryParams.push(`twitter=${twitter}`);
     if (linkedin) queryParams.push(`linkedin=${linkedin}`);
     if (tiktok) queryParams.push(`tiktok=${tiktok}`);
@@ -686,7 +550,6 @@ export const generatePaidReport = async (req: Request, res: Response): Promise<v
       return;
     }
 
-    // Dynamically build the x-report-platform header based on selected platforms
     const selectedPlatforms: string[] = [];
     if (twitter) selectedPlatforms.push('Twitter');
     if (linkedin) selectedPlatforms.push('Linkedin');
@@ -701,7 +564,6 @@ export const generatePaidReport = async (req: Request, res: Response): Promise<v
     };
 
     const response = await axios.get(`${apiUrl}?${queryString}&query=${query}`, { headers });
-
     const data = response.data;
 
     if (!data) {
@@ -710,51 +572,35 @@ export const generatePaidReport = async (req: Request, res: Response): Promise<v
     }
 
     const pdfBuffer = await generatePaidPdfReport(data);
- 
+
     const report = new Report({
       name: `${query} - ${new Date().toISOString()}`,
       pdf: pdfBuffer,
       user: userId,
       platform: 'Cross Platform',
-      type: 'paid',
+      type: 'report',
     });
     await report.save();
-    
-    if (!isSpecialUser) {
-      user.tokens -= requiredTokens;
-      await user.save();
-    }
 
-    res.setHeader('Content-Disposition', 'attachment; filename="paid_sentiment_report.pdf"');
+    res.setHeader('Content-Disposition', 'attachment; filename="reputation_report.pdf"');
     res.setHeader('Content-Type', 'application/pdf');
     res.end(pdfBuffer);
 
   } catch (error: any) {
-    console.error('Error in generatePaidReport:', error);
-    console.error('Error message:', error.message);
-    console.error('Error response:', error.response?.data);
-    console.error('Error status:', error.response?.status);
-    
-    // Forward PRIVATE_PROFILE error from internal API to frontend
     if (error.response && error.response.status === 404 && error.response.data?.error === 'PRIVATE_PROFILE') {
-      console.log('PRIVATE_PROFILE error from API response detected');
       res.status(404).json({
         message: error.response.data.message,
         error: error.response.data.error
       });
       return;
     }
-    
-    // Handle direct PRIVATE_PROFILE error
     if (error.message === 'PRIVATE_PROFILE') {
-      console.log('Direct PRIVATE_PROFILE error detected');
       res.status(404).json({
         message: 'The profile you are trying to fetch is set to private or has no accessible posts',
         error: 'PRIVATE_PROFILE'
       });
       return;
     }
-    
     console.error('Error fetching data or generating PDF:', error);
     res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
   }

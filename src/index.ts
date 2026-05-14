@@ -12,8 +12,6 @@ import GoogleRoutes from './routes/googleRoutes';
 import CrossPlatformRoutes from './routes/crossPlatformRoutes';
 import authRoutes from './routes/authRoutes';
 import ReportRoutes from './routes/reportRoutes';
-import PaymentRoutes from './routes/paymentRoutes';
-import ProductRoutes from './routes/productRoutes';
 import UserRoutes from './routes/userRoutes';
 import signupLogRoutes from './routes/signupLogRoutes';
 import searchLogRoutes from './routes/searchLogRoutes';
@@ -39,15 +37,19 @@ app.use('/api/google', express.json(), GoogleRoutes);
 app.use('/api/crossplatform', express.json(), CrossPlatformRoutes); 
 app.use('/api/report', express.json(), ReportRoutes);
 app.use('/api/auth', express.json(), authRoutes);
-app.use('/api/payment', PaymentRoutes);
-app.use('/api/products', express.json(), ProductRoutes);
 app.use('/api/users', express.json(), UserRoutes);
 app.use('/api/signup-logs', express.json(), signupLogRoutes);
 app.use('/api/search-logs', express.json(), searchLogRoutes);
 
-mongoose.connect(process.env.MONGO_URI as string)
-    .then(() => {
+const connectDB = async () => {
+    try {
+        await mongoose.connect(process.env.MONGO_URI as string);
         console.log("MongoDB Connected");
-        app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-    })
-    .catch(err => console.log(err));
+    } catch (err) {
+        console.error("MongoDB Connection Error:", err);
+        console.log("Server starting in offline-database mode...");
+    }
+    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+};
+
+connectDB();
