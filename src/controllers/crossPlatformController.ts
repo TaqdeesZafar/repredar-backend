@@ -16,9 +16,11 @@ const facebookHeaders = {
 };
 
 const linkedinHeaders = {
-  'x-rapidapi-host': 'linkedin-data-api.p.rapidapi.com',
+  'x-rapidapi-host': 'fresh-linkedin-profile-data.p.rapidapi.com',
   'x-rapidapi-key': process.env.RAPID_API_KEY,
 };
+
+const LINKEDIN_BASE = 'https://fresh-linkedin-profile-data.p.rapidapi.com';
 
 const tiktokHeaders = {
   'x-rapidapi-host': 'tiktok-api23.p.rapidapi.com',
@@ -31,8 +33,6 @@ const twitterHeaders = {
 };
 
 const twitterTweetIdsApiUrl = process.env.TWITTER_TWEET_IDS_API_URL;
-const linkedinCompanyPostsApiUrl = process.env.LINKEDIN_COMPANY_POSTS_API_URL;
-const linkedinProfilePostsApiUrl = process.env.LINKEDIN_PROFILE_POSTS_API_URL;
 const tiktokPostsIdsApiUrl = process.env.TIKTOK_POSTS_IDS_API_URL;
 const facebookSearchApiUrl = process.env.FACEBOOK_SEARCH_API_URL;
 const facebookSearchProfileUrl = process.env.FACEBOOK_SEARCH_PROFILE_URL;
@@ -139,23 +139,19 @@ export const fetchPostsById = async (url: string, context?: { facebookType?: 'pa
 
     else if (url.includes('linkedin.com')) {
       const profileType = isLinkedInCompanyURL(url) ? 'company' : 'person';
-      const usernameMatch = url.match(/\/(company|in)\/([^/?#]+)/);
-      const username = usernameMatch ? usernameMatch[2] : null;
-      if (username) {
-        const postsUrl = profileType === 'company' ? linkedinCompanyPostsApiUrl : linkedinProfilePostsApiUrl;
-        if (postsUrl) {
-          try {
-            const response = await axios.get(postsUrl, {
-              headers: linkedinHeaders,
-              params: profileType === 'company' ? { username, start: 0 } : { username },
-            });
-            const posts = response.data?.data || [];
-            const urns = posts.map((p: any) => p.urn).filter(Boolean);
-            dictionary.linkedin = { urns, profileType };
-          } catch {
-            // LinkedIn API may be unavailable â€” skip silently
-          }
-        }
+      try {
+        const postsEndpoint = profileType === 'company'
+          ? `${LINKEDIN_BASE}/get-company-posts`
+          : `${LINKEDIN_BASE}/get-profile-posts`;
+        const params = profileType === 'company'
+          ? { linkedin_url: url, start: 0, sort_by: 'top' }
+          : { linkedin_url: url, type: 'posts' };
+        const response = await axios.get(postsEndpoint, { headers: linkedinHeaders, params });
+        const posts = response.data?.data || [];
+        const urns = posts.map((p: any) => p.urn).filter(Boolean).slice(0, 5);
+        dictionary.linkedin = { urns, profileType };
+      } catch {
+        // LinkedIn API unavailable — skip silently
       }
     }
 
@@ -272,24 +268,19 @@ export const fetchReplies = async (data: any): Promise<any> => {
     }
 
     if (data.linkedin && data.linkedin.linkedin && data.linkedin.linkedin.urns) {
-      const { urns, profileType } = data.linkedin.linkedin;
-      const commentsUrl = profileType === 'company'
-        ? process.env.LINKEDIN_COMPANY_POST_COMMENTS_API_URL
-        : process.env.LINKEDIN_PROFILE_POST_COMMENTS_API_URL;
+      const { urns } = data.linkedin.linkedin;
       let allComments: string[] = [];
-      if (commentsUrl) {
-        for (const urn of urns) {
-          try {
-            const response = await axios.get(commentsUrl, {
-              headers: linkedinHeaders,
-              params: { urn, sort: 'mostRelevant', page: 1 },
-            });
-            const comments = response.data?.data || [];
-            const texts = comments.map((c: any) => c.comment || c.text?.content || c.text || '').filter(Boolean);
-            allComments = [...allComments, ...texts];
-          } catch {
-            // skip posts with no accessible comments
-          }
+      for (const urn of urns) {
+        try {
+          const response = await axios.get(`${LINKEDIN_BASE}/get-post-comments`, {
+            headers: linkedinHeaders,
+            params: { urn, sort_by: 'Most relevant', page: 1 },
+          });
+          const comments = response.data?.data || [];
+          const texts = comments.map((c: any) => c.comment || c.text || '').filter(Boolean);
+          allComments = [...allComments, ...texts];
+        } catch {
+          // skip posts with no accessible comments
         }
       }
       dictionary.linkedin = allComments.join(' ');

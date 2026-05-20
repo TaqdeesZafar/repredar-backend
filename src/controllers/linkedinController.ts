@@ -65,6 +65,7 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
     }
 
     // People from post authors — dedupe by linkedin URL
+    let peopleBase: any[] = [];
     if (postsRes.status === 'fulfilled') {
       const posts = postsRes.value.data?.data || [];
       const seen = new Set<string>();
@@ -72,16 +73,41 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
         const url = post.poster_linkedin_url || '';
         if (!url || seen.has(url)) continue;
         seen.add(url);
-        linkedinUsers.push({
+        peopleBase.push({
           full_name: post.poster_name || '',
           url,
-          profile_picture: [],
           headline: post.poster_title || '',
           type: 'Person',
         });
-        if (linkedinUsers.length >= 10) break;
+        if (peopleBase.length >= 8) break;
       }
     }
+
+    // Enrich people in parallel to get profile pictures
+    const enriched = await Promise.allSettled(
+      peopleBase.map(person =>
+        axios.get(`${BASE}/enrich-lead`, {
+          headers: linkedinHeaders,
+          params: {
+            linkedin_url: person.url,
+            include_skills: false,
+            include_certifications: false,
+            include_profile_status: false,
+            include_company_public_url: false,
+          },
+        })
+      )
+    );
+
+    enriched.forEach((result, i) => {
+      const imgUrl = result.status === 'fulfilled'
+        ? result.value.data?.data?.profile_image_url || ''
+        : '';
+      linkedinUsers.push({
+        ...peopleBase[i],
+        profile_picture: imgUrl ? [{ url: imgUrl }] : [],
+      });
+    });
 
     res.json({ linkedinUsers });
   } catch (error: any) {
