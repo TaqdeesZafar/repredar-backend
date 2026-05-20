@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+﻿import { Request, Response } from 'express';
 import stripe from '../services/stripe.service';
 import Stripe from 'stripe';
 import User from '../models/User';
@@ -54,7 +54,7 @@ export const createCheckoutSession = async (req: Request, res: Response): Promis
     });
 
     res.json({ url: session.url });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Stripe error:', error);
     res.status(500).json({ error: 'Stripe checkout failed' });
   }
@@ -197,3 +197,4 @@ export const handleStripeWebhook = async (req: Request, res: Response): Promise<
 
   res.send();
 };
+

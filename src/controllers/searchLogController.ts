@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+﻿import { Request, Response } from 'express';
 import SearchLog, { ISearchLog } from '../models/SearchLog';
 
 export const logSearch = async (req: Request, res: Response) => {
@@ -17,7 +17,7 @@ export const logSearch = async (req: Request, res: Response) => {
 
     await log.save();
     res.status(200).json({ message: 'Search logged successfully' });
-  } catch (error) {
+  } catch (error: any) {
     res.status(500).json({ message: 'Error logging search', error });
   }
 };
@@ -44,7 +44,7 @@ export const getSearchLogs = async (req: Request, res: Response) => {
       .populate('userId', 'email username'); // Populate user info if needed
     
     res.status(200).json(logs);
-  } catch (error) {
+  } catch (error: any) {
     res.status(500).json({ message: 'Error retrieving search logs', error });
   }
 };
@@ -82,7 +82,7 @@ export const getSearchStats = async (req: Request, res: Response) => {
     ]);
 
     res.status(200).json(stats);
-  } catch (error) {
+  } catch (error: any) {
     res.status(500).json({ message: 'Error retrieving search stats', error });
   }
 }; 

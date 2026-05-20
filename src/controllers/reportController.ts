@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+﻿import { Request, Response } from 'express';
 import Report from '../models/Report';
 
 export const getUserReports = async (req: Request, res: Response) => {
@@ -10,7 +10,7 @@ export const getUserReports = async (req: Request, res: Response) => {
     }
     const reports = await Report.find({ user: userId }).sort({ createdAt: -1 });
     res.json(reports);
-  } catch (error) {
+  } catch (error: any) {
     res.status(500).json({ message: 'Failed to fetch reports', error });
   }
 };
@@ -35,12 +35,12 @@ export const downloadReportPdf = async (req: Request, res: Response) => {
     res.setHeader('Content-Disposition', `attachment; filename="${report.name || 'report'}.pdf"`);
     res.setHeader('Content-Type', 'application/pdf');
     res.send(report.pdf);
-  } catch (error) {
+  } catch (error: any) {
     res.status(500).json({ message: 'Failed to download PDF', error });
   }
 };
 
-// Public download via token — used for GHL email links
+// Public download via token â€” used for GHL email links
 export const downloadReportByToken = async (req: Request, res: Response) => {
   try {
     const { token } = req.params;
@@ -55,7 +55,8 @@ export const downloadReportByToken = async (req: Request, res: Response) => {
     res.setHeader('Content-Disposition', `attachment; filename="${report.name || 'reputation_report'}.pdf"`);
     res.setHeader('Content-Type', 'application/pdf');
     res.send(report.pdf);
-  } catch (error) {
+  } catch (error: any) {
     res.status(500).json({ message: 'Failed to download PDF', error });
   }
 };
+

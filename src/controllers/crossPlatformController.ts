@@ -1,4 +1,4 @@
-import axios from 'axios';
+﻿import axios from 'axios';
 import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { generatePaidPdfReport } from '../utils/generatePdfReport';
@@ -153,7 +153,7 @@ export const fetchPostsById = async (url: string, context?: { facebookType?: 'pa
             const urns = posts.map((p: any) => p.urn).filter(Boolean);
             dictionary.linkedin = { urns, profileType };
           } catch {
-            // LinkedIn API may be unavailable — skip silently
+            // LinkedIn API may be unavailable â€” skip silently
           }
         }
       }
@@ -182,7 +182,7 @@ export const fetchPostsById = async (url: string, context?: { facebookType?: 'pa
 
     else if (url.includes('facebook.com')) {
       const isProfile = context?.facebookType === 'profile';
-      // Extract slug from URL (e.g. facebook.com/microsoft → "microsoft")
+      // Extract slug from URL (e.g. facebook.com/microsoft â†’ "microsoft")
       const urlSlug = url.replace(/\/$/, '').split('/').filter(Boolean).pop() || '';
 
       if (isProfile) {
@@ -234,7 +234,7 @@ export const fetchPostsById = async (url: string, context?: { facebookType?: 'pa
     }
 
     return dictionary; 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching data for platform:', error);
     console.error('Error message:', error instanceof Error ? error.message : 'Unknown error');
     console.error('Error type:', typeof error);
@@ -343,7 +343,7 @@ export const fetchReplies = async (data: any): Promise<any> => {
 
     return dictionary; 
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error fetching replies:", error);
     throw new Error("Failed to fetch replies");
   }
@@ -408,7 +408,7 @@ export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise
     const result = await analyzeAndCombinePaidCrossPlatformData(dictionary, query as string, platform || 'Cross Platform');
     res.json(result);
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching and analyzing data:', error);
     console.error('Error message:', error instanceof Error ? error.message : 'Unknown error');
     console.error('Error type:', typeof error);

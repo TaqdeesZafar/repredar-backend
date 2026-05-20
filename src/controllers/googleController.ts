@@ -1,4 +1,4 @@
-import axios from 'axios';
+﻿import axios from 'axios';
 import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { generatePaidPdfReport } from '../utils/generatePdfReport';
@@ -46,7 +46,7 @@ export const fetchBusinesses = async (req: Request, res: Response): Promise<void
 
         res.json(combinedData);
 
-    } catch (error) {
+    } catch (error: any) {
         const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
       console.error('Error fetching data from external APIs:', errDetail);
       res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
@@ -110,7 +110,7 @@ export const fetchAndAnalyzeBusinesses = async (req: Request, res: Response): Pr
     const Result = await analyzeAndCombinePaidData(combinedReviews, query.toString(), platform || 'Google');
 
     res.json(Result);
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching or analyzing business reviews:', error);
     res.status(500).json({ message: 'Failed to fetch or analyze business reviews' });
   }
@@ -144,7 +144,7 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
     res.setHeader('Content-Type', 'application/pdf');
     res.end(pdfBuffer);
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching data or generating PDF:', error);
     res.status(500).json({ message: error?.message || 'Failed to generate PDF' });
   }

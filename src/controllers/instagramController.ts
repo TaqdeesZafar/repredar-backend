@@ -1,4 +1,4 @@
-import axios from 'axios';
+﻿import axios from 'axios';
 import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { generatePaidPdfReport } from '../utils/generatePdfReport';
@@ -52,7 +52,7 @@ export const searchProfile = async (req: Request, res: Response): Promise<void> 
         };
 
         res.json(responseData);
-    } catch (error) {
+    } catch (error: any) {
         console.error('Error fetching data from Instagram API:', error);
         res.status(500).json({ message: 'Failed to fetch data from Instagram API' });
     }
@@ -106,7 +106,7 @@ export const fetchPostsReplies = async (postIds: string[]) => {
         const replies = instagramResponse.data?.data?.items || [];
         allReplies = [...allReplies, ...replies.map((p: any) => p.text).filter(Boolean)];
       } catch {
-        // post may have no comments — skip and continue
+        // post may have no comments â€” skip and continue
       }
     }
 
@@ -139,7 +139,7 @@ export const fetchPostsReplies = async (postIds: string[]) => {
           const Result = await analyzeAndCombinePaidData(PostReplies, query.toString(), platform || 'Instagram');
 
           res.json(Result);  
-        } catch (error) {
+        } catch (error: any) {
           const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
       console.error('Error fetching data from external APIs:', errDetail);
       res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });

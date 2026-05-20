@@ -1,4 +1,4 @@
-import axios from 'axios';
+﻿import axios from 'axios';
 import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { generatePaidPdfReport } from '../utils/generatePdfReport';
@@ -53,7 +53,7 @@ dotenv.config();
         };
 
         res.json(combinedData);
-    } catch (error) {
+    } catch (error: any) {
         const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
       console.error('Error fetching data from external APIs:', errDetail);
       res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
@@ -84,7 +84,7 @@ export const fetchProfileUsers = async (req: Request, res: Response): Promise<vo
       };
 
       res.json(combinedData);
-  } catch (error) {
+  } catch (error: any) {
       const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
       console.error('Error fetching data from external APIs:', errDetail);
       res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
@@ -154,7 +154,7 @@ export const fetchPostsById = async (page_id?: string, profile_id?: string) => {
     }
     // If neither is provided
     return { postIds: [], reactions: [], isPrivate: false };
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error fetching Posts by ID:", error);
     return { postIds: [], reactions: [], isPrivate: false };
   }
@@ -176,7 +176,7 @@ export const fetchPostsReplies = async (postIds: string[], reactions: string[]) 
       allReplies = [...allReplies, ...replyTexts];
       if (reactions[i]) allReplies.push(reactions[i]);
     } catch {
-      // rate-limited or post unavailable — skip and continue
+      // rate-limited or post unavailable â€” skip and continue
     }
   }
 
@@ -221,7 +221,7 @@ export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise
       const Result = await analyzeAndCombinePaidData(postReplies, query.toString(), platform || 'Facebook');
 
       res.json(Result);  
-    } catch (error) {
+    } catch (error: any) {
       const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
       console.error('Error fetching data from external APIs:', errDetail);
       res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });

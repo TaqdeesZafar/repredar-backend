@@ -48,7 +48,7 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
 
         res.json(combinedData);
 
-    } catch (error) {
+    } catch (error: any) {
         const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
       console.error('Error fetching data from external APIs:', errDetail);
       res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
@@ -131,7 +131,7 @@ export const fetchAndAnalyzeTweets = async (req: Request, res: Response): Promis
       const Result = await analyzeAndCombinePaidData(combinedText, query.toString(), platform || 'X');
 
       res.json(Result);
-    } catch (error) {
+    } catch (error: any) {
       const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
       console.error('Error fetching data from external APIs:', errDetail);
       res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });

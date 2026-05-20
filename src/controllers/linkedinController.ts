@@ -1,4 +1,4 @@
-import axios from 'axios';
+﻿import axios from 'axios';
 import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { generatePaidPdfReport } from '../utils/generatePdfReport';
@@ -25,7 +25,7 @@ function parseLinkedIn(input: string): { type: 'company' | 'person'; username: s
   if (companyMatch) return { type: 'company', username: companyMatch[1] };
   const personMatch = input.match(/\/in\/([^/?#]+)/);
   if (personMatch) return { type: 'person', username: personMatch[1] };
-  // Plain username or keyword — default to company
+  // Plain username or keyword â€” default to company
   return { type: 'company', username: input.replace(/\/$/, '') };
 }
 
@@ -50,7 +50,7 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
 
     const rawUsers = linkedinResponse.data?.data || linkedinResponse.data?.items || linkedinResponse.data?.results || [];
 
-    // Normalise field names — API may return profileUrl or url
+    // Normalise field names â€” API may return profileUrl or url
     const linkedinUsers = rawUsers.map((u: any) => ({
       ...u,
       url: u.url || u.profileUrl || u.profile_url || u.linkedin_url || '',
@@ -59,7 +59,7 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
     }));
 
     res.json({ linkedinUsers });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching LinkedIn users:', error);
     res.status(500).json({ message: 'Failed to fetch LinkedIn data' });
   }
@@ -80,7 +80,7 @@ export const fetchPostsById = async (urlOrUsername: string): Promise<{ urns: str
     const posts = response.data?.data || [];
     const urns = posts.map((p: any) => p.urn).filter(Boolean);
     return { urns, profileType: type };
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching LinkedIn posts:', error);
     return { urns: [], profileType: type };
   }
@@ -130,7 +130,7 @@ export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise
     const Result = await analyzeAndCombinePaidData(postReplies, query.toString(), platform || 'LinkedIn');
 
     res.json(Result);
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching LinkedIn data:', error);
     res.status(500).json({ message: 'Failed to fetch data from external APIs' });
   }
@@ -168,3 +168,4 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
     res.status(500).json({ message: error?.message || 'Failed to generate PDF' });
   }
 };
+

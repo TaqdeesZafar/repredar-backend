@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+﻿import { Request, Response } from 'express';
 import stripe from '../services/stripe.service';
 import Stripe from 'stripe';
 
@@ -41,7 +41,7 @@ export const getSubscriptionProducts = async (req: Request, res: Response) => {
       });
 
     res.json({ products: formatted });
-  } catch (error) {
+  } catch (error: any) {
     console.error('[Stripe] Failed to load products:', error);
     res.status(500).json({ error: 'Failed to load subscription products' });
   }
@@ -73,8 +73,9 @@ export const getProductById = async (req: Request, res: Response): Promise<void>
       interval: price.recurring?.interval,
       tokens: parseInt(product.metadata.token_count || '0', 10),
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('[Stripe] Failed to fetch product:', error);
     res.status(500).json({ error: 'Failed to fetch product details' });
   }
 };
+

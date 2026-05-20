@@ -1,4 +1,4 @@
-import { Request, Response } from "express";
+﻿import { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
@@ -29,7 +29,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         });
 
         res.status(201).json({ message: "User registered successfully" });
-    } catch (error) {
+    } catch (error: any) {
         res.status(500).json({ error: "Server error", details: error });
     }
 };
@@ -57,7 +57,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
           );
           
         res.json({ token });
-    } catch (error) {
+    } catch (error: any) {
         res.status(500).json({ error: "Server error", details: error });
     }
 };
@@ -83,7 +83,7 @@ export const forgotPassword = async (req: Request, res: Response): Promise<void>
         await sendPasswordResetEmail(user.email, resetToken);
 
         res.json({ message: "Password reset email sent" });
-    } catch (error) {
+    } catch (error: any) {
         res.status(500).json({ error: "Server error", details: error });
     }
 };
@@ -110,7 +110,7 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
         await user.save();
 
         res.json({ message: "Password has been reset successfully" });
-    } catch (error) {
+    } catch (error: any) {
         res.status(500).json({ error: "Server error", details: error });
     }
 };
@@ -147,7 +147,8 @@ export const guestToken = async (req: Request, res: Response): Promise<void> => 
         );
           
         res.json({ token });
-    } catch (error) {
+    } catch (error: any) {
         res.status(500).json({ error: "Server error", details: error });
     }
 };
+

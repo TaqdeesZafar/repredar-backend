@@ -102,7 +102,7 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
 
         res.json({ tiktokUsers });
 
-    } catch (error) {
+    } catch (error: any) {
         const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
       console.error('Error fetching data from external APIs:', errDetail);
       res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
@@ -178,7 +178,7 @@ export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise
       const Result = await analyzeAndCombinePaidData(postReplies, query.toString(), platform || 'TikTok');
 
       res.json(Result);  
-    } catch (error) {
+    } catch (error: any) {
       const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
       console.error('Error fetching data from external APIs:', errDetail);
       res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
