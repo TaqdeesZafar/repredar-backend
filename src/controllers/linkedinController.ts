@@ -79,11 +79,41 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
           url,
           profile_picture: [],
           headline: post.poster_title || '',
-          follower_count: post.poster_follower_count || 0,
+          follower_count: 0,
           type: 'Person',
         });
         if (linkedinUsers.length >= 10) break;
       }
+    }
+
+    // Enrich people in parallel to get profile pictures and real follower counts
+    const peopleToEnrich = linkedinUsers.filter(u => u.type === 'Person' && u.url);
+    if (peopleToEnrich.length > 0) {
+      const enrichResults = await Promise.allSettled(
+        peopleToEnrich.map(u =>
+          axios.get(`${BASE}/enrich-lead`, {
+            headers: linkedinHeaders,
+            params: {
+              linkedin_url: u.url,
+              include_skills: false,
+              include_certifications: false,
+              include_profile_status: false,
+              include_company_public_url: false,
+            },
+            timeout: 8000,
+          })
+        )
+      );
+      enrichResults.forEach((r, i) => {
+        if (r.status !== 'fulfilled') return;
+        const d = r.value.data?.data;
+        if (!d) return;
+        const person = peopleToEnrich[i];
+        const idx = linkedinUsers.findIndex(u => u.url === person.url);
+        if (idx === -1) return;
+        if (d.profile_image_url) linkedinUsers[idx].profile_picture = [{ url: d.profile_image_url }];
+        if (d.follower_count || d.followers_count) linkedinUsers[idx].follower_count = d.follower_count || d.followers_count;
+      });
     }
 
     // Sort by follower count descending — most popular first
