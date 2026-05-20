@@ -64,8 +64,7 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
       }
     }
 
-    // People from post authors — dedupe by linkedin URL
-    let peopleBase: any[] = [];
+    // People from post authors — dedupe by linkedin URL, no enrichment (fast)
     if (postsRes.status === 'fulfilled') {
       const posts = postsRes.value.data?.data || [];
       const seen = new Set<string>();
@@ -73,46 +72,60 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
         const url = post.poster_linkedin_url || '';
         if (!url || seen.has(url)) continue;
         seen.add(url);
-        peopleBase.push({
+        linkedinUsers.push({
           full_name: post.poster_name || '',
           url,
+          profile_picture: [],
           headline: post.poster_title || '',
           type: 'Person',
         });
-        if (peopleBase.length >= 8) break;
+        if (linkedinUsers.length >= 10) break;
       }
     }
-
-    // Enrich people in parallel to get profile pictures
-    const enriched = await Promise.allSettled(
-      peopleBase.map(person =>
-        axios.get(`${BASE}/enrich-lead`, {
-          headers: linkedinHeaders,
-          params: {
-            linkedin_url: person.url,
-            include_skills: false,
-            include_certifications: false,
-            include_profile_status: false,
-            include_company_public_url: false,
-          },
-        })
-      )
-    );
-
-    enriched.forEach((result, i) => {
-      const imgUrl = result.status === 'fulfilled'
-        ? result.value.data?.data?.profile_image_url || ''
-        : '';
-      linkedinUsers.push({
-        ...peopleBase[i],
-        profile_picture: imgUrl ? [{ url: imgUrl }] : [],
-      });
-    });
 
     res.json({ linkedinUsers });
   } catch (error: any) {
     console.error('Error fetching LinkedIn users:', error);
     res.status(500).json({ message: 'Failed to fetch LinkedIn data' });
+  }
+};
+
+// Accepts array of linkedin URLs, returns profile_image_url for each
+export const enrichUsers = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { urls } = req.body as { urls: string[] };
+    if (!Array.isArray(urls) || urls.length === 0) {
+      res.json({ enriched: [] });
+      return;
+    }
+
+    const results = await Promise.allSettled(
+      urls.map(url =>
+        axios.get(`${BASE}/enrich-lead`, {
+          headers: linkedinHeaders,
+          params: {
+            linkedin_url: url,
+            include_skills: false,
+            include_certifications: false,
+            include_profile_status: false,
+            include_company_public_url: false,
+          },
+          timeout: 5000,
+        })
+      )
+    );
+
+    const enriched = results.map((result, i) => ({
+      url: urls[i],
+      profile_image_url: result.status === 'fulfilled'
+        ? result.value.data?.data?.profile_image_url || ''
+        : '',
+    }));
+
+    res.json({ enriched });
+  } catch (error: any) {
+    console.error('Error enriching LinkedIn users:', error);
+    res.json({ enriched: [] });
   }
 };
 
