@@ -33,7 +33,14 @@ const connectDB = async (): Promise<void> => {
     }
 };
 
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-report-platform'],
+  optionsSuccessStatus: 200,
+}));
+
+app.options('*', cors());
 
 // Ensure DB connection on every request (serverless-safe)
 app.use(async (_req, _res, next) => {
