@@ -33,43 +33,52 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
 
     const keyword = query.toString();
 
-    // Try company search by domain/keyword and person enrichment in parallel
-    const [companyRes, personRes] = await Promise.allSettled([
+    // Run company domain lookup and post search in parallel
+    const [companyRes, postsRes] = await Promise.allSettled([
       axios.get(`${BASE}/get-company-by-domain`, {
         headers: linkedinHeaders,
         params: { domain: keyword },
       }),
-      axios.post(`${BASE}/search-employees`, {
-        keywords: keyword,
-        limit: 10,
+      axios.post(`${BASE}/search-posts`, {
+        search_keywords: keyword,
+        sort_by: 'Latest',
+        page: 1,
       }, { headers: linkedinHeaders }),
     ]);
 
     let linkedinUsers: any[] = [];
 
+    // Company result
     if (companyRes.status === 'fulfilled') {
       const c = companyRes.value.data?.data || companyRes.value.data;
-      if (c && c.linkedin_url) {
+      if (c && (c.company_name || c.name)) {
         linkedinUsers.push({
-          full_name: c.name || keyword,
-          url: c.linkedin_url || '',
-          profile_picture: c.logo ? [{ url: c.logo }] : [],
-          headline: c.description || c.industry || '',
+          full_name: c.company_name || c.name || keyword,
+          url: c.linkedin_url || `https://www.linkedin.com/company/${keyword}`,
+          profile_picture: c.profile_pic_url ? [{ url: c.profile_pic_url }] : [],
+          headline: c.tagline || c.description?.slice(0, 100) || c.industry || '',
           type: 'Company',
         });
       }
     }
 
-    if (personRes.status === 'fulfilled') {
-      const people = personRes.value.data?.data || personRes.value.data?.items || [];
-      const mapped = people.slice(0, 8).map((u: any) => ({
-        full_name: u.full_name || u.name || '',
-        url: u.linkedin_url || u.url || '',
-        profile_picture: u.profile_picture ? [{ url: u.profile_picture }] : [],
-        headline: u.headline || u.title || '',
-        type: 'Person',
-      }));
-      linkedinUsers = [...linkedinUsers, ...mapped];
+    // People from post authors — dedupe by linkedin URL
+    if (postsRes.status === 'fulfilled') {
+      const posts = postsRes.value.data?.data || [];
+      const seen = new Set<string>();
+      for (const post of posts) {
+        const url = post.poster_linkedin_url || '';
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        linkedinUsers.push({
+          full_name: post.poster_name || '',
+          url,
+          profile_picture: post.poster_image_url ? [{ url: post.poster_image_url }] : [],
+          headline: post.poster_title || '',
+          type: 'Person',
+        });
+        if (linkedinUsers.length >= 10) break;
+      }
     }
 
     res.json({ linkedinUsers });
