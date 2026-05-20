@@ -31,47 +31,70 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    const keyword = query.toString();
-    // Try both the raw keyword as domain and keyword+.com
-    const domain = keyword.includes('.') ? keyword : `${keyword}.com`;
+    const keyword = query.toString().trim();
+    const slug = keyword.toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9-]/g, '');
+    const domain = keyword.includes('.') ? keyword : `${slug}.com`;
 
-    // Run company domain lookup and post search in parallel
-    const [companyRes, postsRes] = await Promise.allSettled([
-      axios.get(`${BASE}/get-company-by-domain`, {
-        headers: linkedinHeaders,
-        params: { domain },
-      }),
-      axios.post(`${BASE}/search-posts`, {
-        search_keywords: keyword,
-        sort_by: 'Latest',
-        page: 1,
-      }, { headers: linkedinHeaders }),
+    // Try company by domain, direct company URL, direct person URL, and post search — all in parallel
+    const companyUrl = `https://www.linkedin.com/company/${slug}/`;
+    const personUrl  = `https://www.linkedin.com/in/${slug}/`;
+
+    const [domainRes, companyUrlRes, personUrlRes, postsRes] = await Promise.allSettled([
+      axios.get(`${BASE}/get-company-by-domain`, { headers: linkedinHeaders, params: { domain } }),
+      axios.get(`${BASE}/get-company-by-linkedinurl`, { headers: linkedinHeaders, params: { linkedin_url: companyUrl } }),
+      axios.get(`${BASE}/enrich-lead`, { headers: linkedinHeaders, params: { linkedin_url: personUrl, include_skills: false, include_certifications: false, include_profile_status: false, include_company_public_url: false }, timeout: 5000 }),
+      axios.post(`${BASE}/search-posts`, { search_keywords: keyword, sort_by: 'Latest', page: 1 }, { headers: linkedinHeaders }),
     ]);
 
     let linkedinUsers: any[] = [];
+    const seenUrls = new Set<string>();
 
-    // Company result — put it first
-    if (companyRes.status === 'fulfilled') {
-      const c = companyRes.value.data?.data || companyRes.value.data;
-      if (c && (c.company_name || c.name)) {
+    const addCompany = (c: any) => {
+      if (!c || !(c.company_name || c.name)) return;
+      const url = c.linkedin_url || companyUrl;
+      if (seenUrls.has(url)) return;
+      seenUrls.add(url);
+      linkedinUsers.push({
+        full_name: c.company_name || c.name,
+        url,
+        profile_picture: c.logo_url ? [{ url: c.logo_url }] : [],
+        headline: c.tagline || (c.description || '').slice(0, 120) || (c.industries || [])[0] || '',
+        type: 'Company',
+      });
+    };
+
+    // Domain lookup first (most reliable for companies)
+    if (domainRes.status === 'fulfilled') addCompany(domainRes.value.data?.data || domainRes.value.data);
+    // Direct company URL lookup
+    if (companyUrlRes.status === 'fulfilled') addCompany(companyUrlRes.value.data?.data || companyUrlRes.value.data);
+
+    // Direct person URL lookup
+    if (personUrlRes.status === 'fulfilled') {
+      const p = personUrlRes.value.data?.data;
+      if (p?.full_name) {
+        seenUrls.add(personUrl);
         linkedinUsers.push({
-          full_name: c.company_name || c.name || keyword,
-          url: c.linkedin_url || '',
-          profile_picture: c.logo_url ? [{ url: c.logo_url }] : [],
-          headline: c.tagline || (c.description || '').slice(0, 120) || c.industries?.[0] || '',
-          type: 'Company',
+          full_name: p.full_name,
+          url: personUrl,
+          profile_picture: p.profile_image_url ? [{ url: p.profile_image_url }] : [],
+          headline: p.headline || p.title || '',
+          type: 'Person',
         });
       }
     }
 
-    // People from post authors — dedupe by linkedin URL, no enrichment (fast)
+    // Post authors — only add if their name/title closely matches the keyword (relevance filter)
     if (postsRes.status === 'fulfilled') {
       const posts = postsRes.value.data?.data || [];
-      const seen = new Set<string>();
+      const kw = keyword.toLowerCase();
       for (const post of posts) {
         const url = post.poster_linkedin_url || '';
-        if (!url || seen.has(url)) continue;
-        seen.add(url);
+        if (!url || seenUrls.has(url)) continue;
+        const name = (post.poster_name || '').toLowerCase();
+        const title = (post.poster_title || '').toLowerCase();
+        // Only include if poster name or title contains the keyword
+        if (!name.includes(kw) && !title.includes(kw)) continue;
+        seenUrls.add(url);
         linkedinUsers.push({
           full_name: post.poster_name || '',
           url,
