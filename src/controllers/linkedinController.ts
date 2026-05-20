@@ -32,12 +32,14 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
     }
 
     const keyword = query.toString();
+    // Try both the raw keyword as domain and keyword+.com
+    const domain = keyword.includes('.') ? keyword : `${keyword}.com`;
 
     // Run company domain lookup and post search in parallel
     const [companyRes, postsRes] = await Promise.allSettled([
       axios.get(`${BASE}/get-company-by-domain`, {
         headers: linkedinHeaders,
-        params: { domain: keyword },
+        params: { domain },
       }),
       axios.post(`${BASE}/search-posts`, {
         search_keywords: keyword,
@@ -48,15 +50,15 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
 
     let linkedinUsers: any[] = [];
 
-    // Company result
+    // Company result — put it first
     if (companyRes.status === 'fulfilled') {
       const c = companyRes.value.data?.data || companyRes.value.data;
       if (c && (c.company_name || c.name)) {
         linkedinUsers.push({
           full_name: c.company_name || c.name || keyword,
-          url: c.linkedin_url || `https://www.linkedin.com/company/${keyword}`,
-          profile_picture: c.profile_pic_url ? [{ url: c.profile_pic_url }] : [],
-          headline: c.tagline || c.description?.slice(0, 100) || c.industry || '',
+          url: c.linkedin_url || '',
+          profile_picture: c.logo_url ? [{ url: c.logo_url }] : [],
+          headline: c.tagline || (c.description || '').slice(0, 120) || c.industries?.[0] || '',
           type: 'Company',
         });
       }
@@ -73,7 +75,7 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
         linkedinUsers.push({
           full_name: post.poster_name || '',
           url,
-          profile_picture: post.poster_image_url ? [{ url: post.poster_image_url }] : [],
+          profile_picture: [],
           headline: post.poster_title || '',
           type: 'Person',
         });
