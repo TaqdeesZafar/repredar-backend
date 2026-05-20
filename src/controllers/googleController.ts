@@ -3,7 +3,8 @@ import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { generatePaidPdfReport } from '../utils/generatePdfReport';
 import { analyzeAndCombinePaidData } from '../utils/getPaidReport';
-import Report from '../models/Report';
+import { triggerGHLWorkflowSilent } from '../utils/emailUtils';
+import { saveReportAndGetUrl } from '../utils/saveReport';
 
 dotenv.config();
 
@@ -14,7 +15,6 @@ dotenv.config();
 
   const googleSearchApiUrl = process.env.GOOGLE_SEARCH_API_URL;
   const googleReviewsApiUrl = process.env.GOOGLE_REVIEWS_API_URL;
-  const googleData = process.env.GOOGLE_DATA_API_URL;
 
   
 export const fetchBusinesses = async (req: Request, res: Response): Promise<void> => {
@@ -47,8 +47,9 @@ export const fetchBusinesses = async (req: Request, res: Response): Promise<void
         res.json(combinedData);
 
     } catch (error) {
-        console.error('Error fetching data from external APIs:', error);
-        res.status(500).json({ message: 'Failed to fetch data from external APIs' });
+        const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
+      console.error('Error fetching data from external APIs:', errDetail);
+      res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
     }
 };
 
@@ -60,8 +61,10 @@ export const fetchBusinessReviews = async (business_id: string): Promise<{ revie
 
     const params = {
       business_id: business_id,
-      sort_by: 'newest',
-      fields: 'review_text,rating',
+      limit: 20,
+      sort_by: 'most_relevant',
+      language: 'en',
+      region: 'us',
     };
 
     const response = await axios.get(googleReviewsApiUrl, {
@@ -69,25 +72,24 @@ export const fetchBusinessReviews = async (business_id: string): Promise<{ revie
       params,
     });
 
-    const reviews = response.data?.data?.reviews || [];
+    const rawData = response.data?.data;
+    const reviews = Array.isArray(rawData) ? rawData : (rawData?.reviews || rawData?.items || []);
     const review_texts: string[] = [];
     const ratings: number[] = [];
 
     for (const review of reviews) {
-      // Only push if review_text is not null/undefined
       if (typeof review.review_text === 'string') {
         review_texts.push(review.review_text);
       }
-      // Only push if rating is a number
       if (typeof review.rating === 'number') {
         ratings.push(review.rating);
       }
     }
 
     return { review_texts, ratings };
-  } catch (error) {
-    console.error('Error fetching business reviews:', error);
-    throw new Error('Failed to fetch business reviews');
+  } catch (error: any) {
+    console.error('Error fetching business reviews:', error?.response?.data || error?.message);
+    throw new Error(error?.response?.data?.message || error?.message || 'Failed to fetch business reviews');
   }
 };
 
@@ -119,30 +121,13 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
     const { query, business_id } = req.query;
 
     if (!query || !business_id) {
-      res.status(400).json({ message: 'Missing required query parameter: query' });
+      res.status(400).json({ message: 'Missing required query parameter: query or business_id' });
       return;
     }
 
-    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
-    if (!userId) {
-      res.status(401).json({ message: 'User not authenticated' });
-      return;
-    }
-
-    const apiUrl = googleData;
-    if (!apiUrl) {
-      res.status(500).json({ message: 'API URL for Google is not defined in .env' });
-      return;
-    }
-
-    const headers = {
-      ...googleHeaders,
-      'x-report-type': 'paid',
-      'x-report-platform': 'Google Business',
-    };
-
-    const response = await axios.get(`${apiUrl}?query=${query}&business_id=${business_id}`, { headers });
-    const data = response.data;
+    const { review_texts } = await fetchBusinessReviews(business_id.toString());
+    const combinedReviews = review_texts.join(' ');
+    const data = await analyzeAndCombinePaidData(combinedReviews, query.toString(), 'Google Business');
 
     if (!data) {
       res.status(404).json({ message: 'No data found for the given query' });
@@ -150,15 +135,10 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
     }
 
     const pdfBuffer = await generatePaidPdfReport(data);
+    const reportUrl = await saveReportAndGetUrl(pdfBuffer, `${query} - ${new Date().toISOString()}`, 'Google Business');
 
-    const report = new Report({
-      name: `${query} - ${new Date().toISOString()}`,
-      pdf: pdfBuffer,
-      user: userId,
-      platform: 'Google Business',
-      type: 'report',
-    });
-    await report.save();
+    const userEmail = (req.query.email as string) || "";
+    triggerGHLWorkflowSilent(userEmail, query.toString(), 'Google Business', reportUrl || undefined);
 
     res.setHeader('Content-Disposition', 'attachment; filename="reputation_report.pdf"');
     res.setHeader('Content-Type', 'application/pdf');
@@ -166,7 +146,7 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
 
   } catch (error) {
     console.error('Error fetching data or generating PDF:', error);
-    res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
+    res.status(500).json({ message: error?.message || 'Failed to generate PDF' });
   }
 };
 

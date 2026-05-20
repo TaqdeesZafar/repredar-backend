@@ -3,7 +3,8 @@ import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { generatePaidPdfReport } from '../utils/generatePdfReport';
 import { analyzeAndCombinePaidData } from '../utils/getPaidReport';
-import Report from '../models/Report';
+import { triggerGHLWorkflowSilent } from '../utils/emailUtils';
+import { saveReportAndGetUrl } from '../utils/saveReport';
 
 dotenv.config();
 
@@ -22,7 +23,6 @@ dotenv.config();
   const facebookPostsIdsApiUrl = process.env.FACEBOOK_POSTS_IDS_API_URL;
   const facebookProfilePostsIdsApiUrl = process.env.FACEBOOK_PROFILE_POSTS_IDS_API_URL;
   const facebookPostRepliesApiUrl = process.env.FACEBOOK_POST_REPLIES_API_URL;
-  const facebookData = process.env.FACEBOOK_DATA_API_URL;
 
 
   export const fetchUsers = async (req: Request, res: Response): Promise<void> => {
@@ -48,42 +48,15 @@ dotenv.config();
             params: facebookParamsCursor0
         });
 
-        const nextCursor = facebookResponseCursor0.data.cursor;
-        
-        const facebookParamsCursorNext = {
-            query: query.toString(),
-            cursor: nextCursor,
-            };
-
-        const facebookResponseCursor1 = await axios.get(facebookSearchApiUrl, {
-            headers: facebookHeaders,
-            params: facebookParamsCursorNext
-        });
-        
-        const nextCursor2 = facebookResponseCursor1.data.cursor;
-
-        const facebookParamsCursor2 = {
-            query: query.toString(),
-            cursor: nextCursor2,
-            };
-
-        const facebookResponseCursor2 = await axios.get(facebookSearchApiUrl, {
-            headers: facebookHeaders,
-            params: facebookParamsCursor2
-        });
-
         const combinedData = {
-            facebookUsers: [
-                ...facebookResponseCursor0.data.results,
-                ...facebookResponseCursor1.data.results,
-                ...facebookResponseCursor2.data.results,
-            ],
+            facebookUsers: facebookResponseCursor0.data.results || [],
         };
 
         res.json(combinedData);
     } catch (error) {
-        console.error('Error fetching data from external APIs:', error);
-        res.status(500).json({ message: 'Failed to fetch data from external APIs' });
+        const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
+      console.error('Error fetching data from external APIs:', errDetail);
+      res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
     }
 };
 
@@ -101,50 +74,20 @@ export const fetchProfileUsers = async (req: Request, res: Response): Promise<vo
           return;
       }
 
-      const facebookParamsCursor0 = {
-          query: query.toString(),
-      };
-
       const facebookResponseCursor0 = await axios.get(facebookSearchProfileApiUrl, {
           headers: facebookProfileHeaders,
-          params: facebookParamsCursor0
-      });
-      const nextCursor = facebookResponseCursor0.data.data.page_info.cursor;
-      
-      const facebookParamsCursorNext = {
-          query: query.toString(),
-          cursor: nextCursor,
-          };
-
-      const facebookResponseCursor1 = await axios.get(facebookSearchProfileApiUrl, {
-          headers: facebookProfileHeaders,
-          params: facebookParamsCursorNext
-      });
-      
-      const nextCursor2 = facebookResponseCursor1.data.data.page_info.cursor;
-
-      const facebookParamsCursor2 = {
-          query: query.toString(),
-          cursor: nextCursor2,
-          };
-
-      const facebookResponseCursor2 = await axios.get(facebookSearchProfileApiUrl, {
-          headers: facebookProfileHeaders,
-          params: facebookParamsCursor2
+          params: { query: query.toString() },
       });
 
       const combinedData = {
-          facebookUsers: [
-              ...facebookResponseCursor0.data.data.items,
-              ...facebookResponseCursor1.data.data.items,
-              ...facebookResponseCursor2.data.data.items,
-          ],
+          facebookUsers: facebookResponseCursor0.data?.data?.items || [],
       };
 
       res.json(combinedData);
   } catch (error) {
-      console.error('Error fetching data from external APIs:', error);
-      res.status(500).json({ message: 'Failed to fetch data from external APIs' });
+      const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
+      console.error('Error fetching data from external APIs:', errDetail);
+      res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
   }
 };
 
@@ -218,46 +161,26 @@ export const fetchPostsById = async (page_id?: string, profile_id?: string) => {
 };
 
 export const fetchPostsReplies = async (postIds: string[], reactions: string[]) => {
+  if (!postIds || postIds.length === 0 || !facebookPostRepliesApiUrl) return "";
+
+  let allReplies: string[] = [];
+
+  for (let i = 0; i < postIds.length; i++) {
     try {
-      // Check if there are any post IDs to process
-      if (!postIds || postIds.length === 0) {
-        console.log("No posts found to fetch replies for");
-        return "";
-      }
-      
-      let allReplies: string[] = [];
-      let allReactions: string[] = [];
-
-      for (let i = 0; i < postIds.length; i++) {
-        const postId = postIds[i];
-        const facebookParams = { post_id: postId };
-
-        if (!facebookPostRepliesApiUrl) {
-          return;
-        }
-
-        const facebookResponse = await axios.get(facebookPostRepliesApiUrl, {
-          headers: facebookHeaders,
-          params: facebookParams,
-        });
-
-        const replies = facebookResponse?.data?.results || [];
-        const replyTexts = replies.map((comment: any) => comment.message);
-
-        allReplies = [...allReplies, ...replyTexts];
-
-        if (reactions[i]) {
-          allReactions.push(reactions[i]);
-        }
-      }
-
-      const combinedText = [...allReplies, ...allReactions].join(' ');
-
-      return combinedText;
-    } catch (error) {
-      console.error("Error fetching facebook post replies:", error);
-      throw new Error("Failed to fetch facebook post replies");
+      const facebookResponse = await axios.get(facebookPostRepliesApiUrl, {
+        headers: facebookHeaders,
+        params: { post_id: postIds[i] },
+      });
+      const replies = facebookResponse?.data?.results || [];
+      const replyTexts = replies.map((comment: any) => comment.message).filter(Boolean);
+      allReplies = [...allReplies, ...replyTexts];
+      if (reactions[i]) allReplies.push(reactions[i]);
+    } catch {
+      // rate-limited or post unavailable — skip and continue
     }
+  }
+
+  return allReplies.join(' ');
 };
 
 export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise<void> => {
@@ -299,8 +222,9 @@ export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise
 
       res.json(Result);  
     } catch (error) {
-      console.error('Error fetching data from external APIs:', error);
-      res.status(500).json({ message: 'Failed to fetch data from external APIs' });
+      const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
+      console.error('Error fetching data from external APIs:', errDetail);
+      res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
     }
   };
 
@@ -313,31 +237,22 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
-    if (!userId) {
-      res.status(401).json({ message: 'User not authenticated' });
-      return;
-    }
-
-    const apiUrl = facebookData;
-    if (!apiUrl) {
-      res.status(500).json({ message: 'API URL for facebook is not defined in .env' });
-      return;
-    }
-
-    const headers = {
-      ...facebookHeaders,
-      'x-report-type': 'paid',
-      'x-report-platform': 'Facebook',
-    };
-
-    let response;
+    let postIds: string[] = [], reactions: string[] = [], isPrivate = false;
     if (page_id) {
-      response = await axios.get(`${apiUrl}?page_id=${page_id}&query=${query}`, { headers });
+      const result = await fetchPostsById(page_id.toString());
+      postIds = result.postIds; reactions = result.reactions; isPrivate = result.isPrivate;
     } else if (profile_id) {
-      response = await axios.get(`${apiUrl}?profile_id=${profile_id}&query=${query}`, { headers });
+      const result = await fetchPostsById(undefined, profile_id.toString());
+      postIds = result.postIds; reactions = result.reactions; isPrivate = result.isPrivate;
     }
-    const data = response?.data;
+
+    if (isPrivate) {
+      res.status(404).json({ message: 'The profile/page is set to private or has no accessible posts', error: 'PRIVATE_PROFILE' });
+      return;
+    }
+
+    const postReplies = (await fetchPostsReplies(postIds, reactions) as string) || '';
+    const data = await analyzeAndCombinePaidData(postReplies, query.toString(), 'Facebook');
 
     if (!data) {
       res.status(404).json({ message: 'No data found for the given query' });
@@ -345,30 +260,18 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
     }
 
     const pdfBuffer = await generatePaidPdfReport(data);
+    const reportUrl = await saveReportAndGetUrl(pdfBuffer, `${query} - ${new Date().toISOString()}`, 'Facebook');
 
-    const report = new Report({
-      name: `${query} - ${new Date().toISOString()}`,
-      pdf: pdfBuffer,
-      user: userId,
-      platform: 'Facebook',
-      type: 'report',
-    });
-    await report.save();
+    const userEmail = (req.query.email as string) || "";
+    triggerGHLWorkflowSilent(userEmail, query.toString(), 'Facebook', reportUrl || undefined);
 
     res.setHeader('Content-Disposition', 'attachment; filename="reputation_report.pdf"');
     res.setHeader('Content-Type', 'application/pdf');
     res.end(pdfBuffer);
 
   } catch (error: any) {
-    if (error.response && error.response.status === 404 && error.response.data?.error === 'PRIVATE_PROFILE') {
-      res.status(404).json({
-        message: error.response.data.message,
-        error: error.response.data.error
-      });
-      return;
-    }
     console.error('Error fetching data or generating PDF:', error);
-    res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
+    res.status(500).json({ message: error?.message || 'Failed to generate PDF' });
   }
 };
 

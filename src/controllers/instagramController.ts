@@ -3,7 +3,8 @@ import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { generatePaidPdfReport } from '../utils/generatePdfReport';
 import { analyzeAndCombinePaidData } from '../utils/getPaidReport';
-import Report from '../models/Report';
+import { triggerGHLWorkflowSilent } from '../utils/emailUtils';
+import { saveReportAndGetUrl } from '../utils/saveReport';
 
 dotenv.config();
 
@@ -15,7 +16,6 @@ const instagramHeaders = {
 const instagramSearchApiUrl = process.env.INSTAGRAM_SEARCH_API_URL;
 const InstagramPostsIdsApiUrl = process.env.INSTAGRAM_POSTS_IDS_API_URL;
 const instagramPostRepliesApiUrl = process.env.INSTAGRAM_POST_REPLIES_API_URL;
-const instagramData = process.env.INSTAGRAM_DATA_API_URL;
 
 export const searchProfile = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -94,37 +94,24 @@ export const fetchPostsById = async (query: string): Promise<{ postIds: string[]
   };
 
 export const fetchPostsReplies = async (postIds: string[]) => {
-    try {
-        let allReplies: string[] = [];
-    
-        for (let postid of postIds) {
-          const InstagramParams = {
-            code_or_id_or_url: postid,
-          };
-    
-          
-        if (!instagramPostRepliesApiUrl) {
-          return;
-        }
-          const instagramResponse = await axios.get(instagramPostRepliesApiUrl, {
-            headers: instagramHeaders,
-            params: InstagramParams,
-          });
-    
-          const replies = instagramResponse.data.data.items;
-          const replyTexts = replies.map((post: any) => post.text);
-    
-          allReplies = [...allReplies, ...replyTexts];
-        }
-    
-        const combinedPostText = allReplies.join(' ');
-    
-        return combinedPostText;
-      } catch (error) {
-        console.error('Error fetching Posts replies:', error);
-        throw new Error('Failed to fetch posts replies');
+    if (!instagramPostRepliesApiUrl) return '';
+    let allReplies: string[] = [];
+
+    for (const postid of postIds) {
+      try {
+        const instagramResponse = await axios.get(instagramPostRepliesApiUrl, {
+          headers: instagramHeaders,
+          params: { code_or_id_or_url: postid },
+        });
+        const replies = instagramResponse.data?.data?.items || [];
+        allReplies = [...allReplies, ...replies.map((p: any) => p.text).filter(Boolean)];
+      } catch {
+        // post may have no comments — skip and continue
       }
-    };
+    }
+
+    return allReplies.join(' ');
+  };
 
     export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise<void> => {
         try {
@@ -153,8 +140,9 @@ export const fetchPostsReplies = async (postIds: string[]) => {
 
           res.json(Result);  
         } catch (error) {
-          console.error('Error fetching data from external APIs:', error);
-          res.status(500).json({ message: 'Failed to fetch data from external APIs' });
+          const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
+      console.error('Error fetching data from external APIs:', errDetail);
+      res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
         }
       };
     
@@ -168,26 +156,14 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
-    if (!userId) {
-      res.status(401).json({ message: 'User not authenticated' });
+    const formattedQuery = query.toString().replace(/^@/, '');
+    const { postIds, isPrivate } = await fetchPostsById(formattedQuery);
+    if (isPrivate) {
+      res.status(404).json({ message: 'The profile is set to private or has no accessible posts', error: 'PRIVATE_PROFILE' });
       return;
     }
-
-    const apiUrl = instagramData;
-    if (!apiUrl) {
-      res.status(500).json({ message: 'API URL for Instagram is not defined in .env' });
-      return;
-    }
-
-    const headers = {
-      ...instagramHeaders,
-      'x-report-type': 'paid',
-      'x-report-platform': 'Instagram',
-    };
-
-    const response = await axios.get(`${apiUrl}?query=${query}`, { headers });
-    const data = response.data;
+    const postReplies = (await fetchPostsReplies(postIds)) || '';
+    const data = await analyzeAndCombinePaidData(postReplies, query.toString(), 'Instagram');
 
     if (!data) {
       res.status(404).json({ message: 'No data found for the given query' });
@@ -195,30 +171,19 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
     }
 
     const pdfBuffer = await generatePaidPdfReport(data);
+    const reportUrl = await saveReportAndGetUrl(pdfBuffer, `${query} - ${new Date().toISOString()}`, 'Instagram');
 
-    const report = new Report({
-      name: `${query} - ${new Date().toISOString()}`,
-      pdf: pdfBuffer,
-      user: userId,
-      platform: 'Instagram',
-      type: 'report',
-    });
-    await report.save();
+    const userEmail = (req.query.email as string) || "";
+    triggerGHLWorkflowSilent(userEmail, query.toString(), 'Instagram', reportUrl || undefined);
 
     res.setHeader('Content-Disposition', 'attachment; filename="reputation_report.pdf"');
     res.setHeader('Content-Type', 'application/pdf');
     res.end(pdfBuffer);
 
   } catch (error: any) {
-    if (error.response && error.response.status === 404 && error.response.data?.error === 'PRIVATE_PROFILE') {
-      res.status(404).json({
-        message: error.response.data.message,
-        error: error.response.data.error
-      });
-      return;
-    }
-    console.error('Error fetching data or generating PDF:', error);
-    res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
+    const msg = error?.message || 'Unknown error';
+    console.error('Instagram generateReport error:', msg);
+    res.status(500).json({ message: msg });
   }
 };
     

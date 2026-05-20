@@ -3,7 +3,7 @@ import Report from '../models/Report';
 
 export const getUserReports = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id ;
+    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
     if (!userId) {
       res.status(401).json({ message: 'User not authenticated' });
       return;
@@ -11,13 +11,13 @@ export const getUserReports = async (req: Request, res: Response) => {
     const reports = await Report.find({ user: userId }).sort({ createdAt: -1 });
     res.json(reports);
   } catch (error) {
-    res.status(500).json({ message: 'Failed to fetch reports', error } );
+    res.status(500).json({ message: 'Failed to fetch reports', error });
   }
 };
 
 export const downloadReportPdf = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id ;
+    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
     if (!userId) {
       res.status(401).json({ message: 'User not authenticated' });
       return;
@@ -38,4 +38,24 @@ export const downloadReportPdf = async (req: Request, res: Response) => {
   } catch (error) {
     res.status(500).json({ message: 'Failed to download PDF', error });
   }
-}; 
+};
+
+// Public download via token — used for GHL email links
+export const downloadReportByToken = async (req: Request, res: Response) => {
+  try {
+    const { token } = req.params;
+    const report = await Report.findOne({
+      downloadToken: token,
+      expiresAt: { $gt: new Date() },
+    });
+    if (!report) {
+      res.status(404).send('<h2>This report link has expired or is invalid.</h2>');
+      return;
+    }
+    res.setHeader('Content-Disposition', `attachment; filename="${report.name || 'reputation_report'}.pdf"`);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.send(report.pdf);
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to download PDF', error });
+  }
+};

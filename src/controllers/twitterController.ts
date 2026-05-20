@@ -3,7 +3,8 @@ import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { generatePaidPdfReport } from '../utils/generatePdfReport';
 import { analyzeAndCombinePaidData } from '../utils/getPaidReport';
-import Report from '../models/Report';
+import { triggerGHLWorkflowSilent } from '../utils/emailUtils';
+import { saveReportAndGetUrl } from '../utils/saveReport';
 
 dotenv.config();
 
@@ -15,7 +16,6 @@ dotenv.config();
   const twitterSearchApiUrl = process.env.TWITTER_SEARCH_API_URL;
   const twitterTweetIdsApiUrl = process.env.TWITTER_TWEET_IDS_API_URL;
   const twitterTweetRepliesApiUrl = process.env.TWITTER_TWEET_REPLIES_API_URL;
-  const twitterData = process.env.TWITTER_DATA_API_URL;
 
   
 export const fetchUsers = async (req: Request, res: Response): Promise<void> => {
@@ -49,67 +49,45 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
         res.json(combinedData);
 
     } catch (error) {
-        console.error('Error fetching data from external APIs:', error);
-        res.status(500).json({ message: 'Failed to fetch data from external APIs' });
+        const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
+      console.error('Error fetching data from external APIs:', errDetail);
+      res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
     }
 };
 
-export const fetchTweetsById = async (query: string) => {
+export const fetchTweetsById = async (query: string): Promise<string[]> => {
+  if (!twitterTweetIdsApiUrl) return [];
   try {
-    const twitterParams = {
-      screenname: query,
-    };
-
-    if (!twitterTweetIdsApiUrl) {
-      return;
-    }
-
     const twitterResponse = await axios.get(twitterTweetIdsApiUrl, {
       headers: twitterHeaders,
-      params: twitterParams,
+      params: { screenname: query },
     });
-
-    const tweetIds = twitterResponse.data.timeline.map((tweet: any) => tweet.tweet_id);
-
-    return tweetIds; 
-
+    return (twitterResponse.data?.timeline || []).map((tweet: any) => tweet.tweet_id).filter(Boolean);
   } catch (error) {
     console.error('Error fetching tweets by ID:', error);
-    throw new Error('Failed to fetch tweets by ID');
+    return [];
   }
 };
 
 export const fetchTweetsReplies = async (tweetIds: string[]) => {
-  try {
-    let allReplies: string[] = [];
+  if (!twitterTweetRepliesApiUrl || !tweetIds?.length) return '';
+  let allReplies: string[] = [];
 
-    for (let tweetId of tweetIds) {
-      const twitterParams = {
-        id: tweetId,
-      };
-
-      
-    if (!twitterTweetRepliesApiUrl) {
-      return;
-    }
+  for (const tweetId of tweetIds) {
+    try {
       const twitterResponse = await axios.get(twitterTweetRepliesApiUrl, {
         headers: twitterHeaders,
-        params: twitterParams,
+        params: { id: tweetId },
       });
-
-      const replies = twitterResponse.data.timeline;
-      const replyTexts = replies.map((tweet: any) => tweet.text);
-
-      allReplies = [...allReplies, ...replyTexts];
+      const replies = twitterResponse.data?.timeline || [];
+      const texts = replies.map((tweet: any) => tweet.text || '').filter(Boolean);
+      allReplies = [...allReplies, ...texts];
+    } catch {
+      // skip tweets with no accessible replies
     }
-
-    const combinedTweetText = allReplies.join(' ');
-
-    return combinedTweetText;
-  } catch (error) {
-    console.error('Error fetching tweet replies:', error);
-    throw new Error('Failed to fetch tweet replies');
   }
+
+  return allReplies.join(' ');
 };
 
 export const fetchAndAnalyzeTweets = async (req: Request, res: Response): Promise<void> => {
@@ -140,20 +118,10 @@ export const fetchAndAnalyzeTweets = async (req: Request, res: Response): Promis
         params: twitterParams,
       });
   
-      const mentions = twitterResponse.data.timeline;
-      const combinedMentions = mentions
-      .map((mention: any) => mention.text)
-      .join(' ');
+      const mentions = twitterResponse.data.timeline || [];
+      const combinedMentions = mentions.map((mention: any) => mention.text || '').join(' ');
 
       const tweetIds = await fetchTweetsById(formatedQuery);
-
-
-      // if (!tweetIds || tweetIds.length === 0) {
-      //   const result = await analyzeAndCombineData(combinedMentions, query.toString());
-      //   res.json(result);
-      //   return;
-      // }
-  
       const tweetReplies = await fetchTweetsReplies(tweetIds);
 
 
@@ -164,8 +132,9 @@ export const fetchAndAnalyzeTweets = async (req: Request, res: Response): Promis
 
       res.json(Result);
     } catch (error) {
-      console.error('Error fetching data from external APIs:', error);
-      res.status(500).json({ message: 'Failed to fetch data from external APIs' });
+      const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
+      console.error('Error fetching data from external APIs:', errDetail);
+      res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
     }
   };
 
@@ -178,26 +147,15 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
-    if (!userId) {
-      res.status(401).json({ message: 'User not authenticated' });
-      return;
-    }
-
-    const apiUrl = twitterData;
-    if (!apiUrl) {
-      res.status(500).json({ message: 'API URL for Twitter is not defined in .env' });
-      return;
-    }
-
-    const headers = {
-      ...twitterHeaders,
-      'x-report-type': 'paid',
-      'x-report-platform': 'X',
-    };
-
-    const response = await axios.get(`${apiUrl}?query=${query}&search_type=Latest`, { headers });
-    const data = response.data;
+    const formattedQuery = query.toString().replace(/^@/, '');
+    const twitterParams = { query: query.toString(), search_type: 'Latest' };
+    const twitterResponse = await axios.get(twitterSearchApiUrl!, { headers: twitterHeaders, params: twitterParams });
+    const mentions = twitterResponse.data.timeline || [];
+    const combinedMentions = mentions.map((m: any) => m.text).join(' ');
+    const tweetIds = await fetchTweetsById(formattedQuery);
+    const tweetReplies = await fetchTweetsReplies(tweetIds);
+    const combinedText = combinedMentions + ' ' + tweetReplies;
+    const data = await analyzeAndCombinePaidData(combinedText, query.toString(), 'X');
 
     if (!data) {
       res.status(404).json({ message: 'No data found for the given query' });
@@ -205,23 +163,19 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
     }
 
     const pdfBuffer = await generatePaidPdfReport(data);
+    const reportUrl = await saveReportAndGetUrl(pdfBuffer, `${query} - ${new Date().toISOString()}`, 'X');
 
-    const report = new Report({
-      name: `${query} - ${new Date().toISOString()}`,
-      pdf: pdfBuffer,
-      user: userId,
-      platform: 'X',
-      type: 'report',
-    });
-    await report.save();
+    const userEmail = (req.query.email as string) || "";
+    triggerGHLWorkflowSilent(userEmail, query.toString(), 'X', reportUrl || undefined);
 
     res.setHeader('Content-Disposition', 'attachment; filename="reputation_report.pdf"');
     res.setHeader('Content-Type', 'application/pdf');
     res.end(pdfBuffer);
 
-  } catch (error) {
-    console.error('Error fetching data or generating PDF:', error);
-    res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
+  } catch (error: any) {
+    const detail = error?.response?.data?.message || error?.message || 'Unknown';
+    console.error('Error in Twitter generateReport:', error);
+    res.status(500).json({ message: `Failed to generate PDF: ${detail}` });
   }
 };
 

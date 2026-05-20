@@ -6,6 +6,6 @@ const router = express.Router();
 
 router.get('/search-profile', searchProfile);
 router.get('/fetch-analyze-posts', fetchAndAnalyzePosts);
-router.get('/generate-pdf-report', authMiddleware, generateReport);
+router.get('/generate-pdf-report', generateReport);
 
 export default router;

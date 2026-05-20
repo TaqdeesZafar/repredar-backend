@@ -3,7 +3,8 @@ import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { generatePaidPdfReport } from '../utils/generatePdfReport';
 import { analyzeAndCombinePaidData } from '../utils/getPaidReport';
-import Report from '../models/Report';
+import { triggerGHLWorkflowSilent } from '../utils/emailUtils';
+import { saveReportAndGetUrl } from '../utils/saveReport';
 
 
 dotenv.config();
@@ -16,7 +17,6 @@ dotenv.config();
   const tiktokSearchApiUrl = process.env.TIKTOK_SEARCH_API_URL;
   const tiktokPostsIdsApiUrl = process.env.TIKTOK_POSTS_IDS_API_URL;
   const tiktokPostRepliesApiUrl = process.env.TIKTOK_POST_REPLIES_API_URL;
-  const tiktokData = process.env.TIKTOK_DATA_API_URL;
 
 
 export const fetchUsers = async (req: Request, res: Response): Promise<void> => {
@@ -33,35 +33,79 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
             return;
         }
 
-        const tiktokParamsCursor0 = {
-            keyword: query.toString(),
-            cursor: 10,
-            search_id: 0
-          };
-      
-          const tiktokParamsCursor10 = {
-            keyword: query.toString(),
-            cursor: 10,
-            search_id: 0
-          };
+        const keyword = query.toString().replace(/^@/, '');
 
-          const [tiktokResponseCursor0, tiktokResponseCursor10] = await Promise.all([
-            axios.get(tiktokSearchApiUrl, { headers: tiktokHeaders, params: tiktokParamsCursor0 }),
-            axios.get(tiktokSearchApiUrl, { headers: tiktokHeaders, params: tiktokParamsCursor10 }),
-          ]);
+        // Direct username lookup + keyword search in parallel
+        const userInfoUrl = 'https://tiktok-api23.p.rapidapi.com/api/user/info';
+        const [searchResponse, userInfoResponse] = await Promise.allSettled([
+          axios.get(tiktokSearchApiUrl, {
+            headers: tiktokHeaders,
+            params: { keyword, cursor: 0, search_id: 0 },
+          }),
+          axios.get(userInfoUrl, {
+            headers: tiktokHeaders,
+            params: { uniqueId: keyword },
+          }),
+        ]);
 
-          const combinedData = {
-            tiktokUsers: [
-              ...tiktokResponseCursor0.data.user_list,
-              ...tiktokResponseCursor10.data.user_list,
-            ],
-          };
+        const rawSearchUsers: any[] =
+          searchResponse.status === 'fulfilled'
+            ? searchResponse.value.data?.user_list || []
+            : [];
 
-        res.json(combinedData);
+        // Debug: log raw user_info fields to find the verified field name
+        if (rawSearchUsers.length > 0) {
+          console.log('[TikTok search] first user_info keys:', Object.keys(rawSearchUsers[0]?.user_info || {}));
+          console.log('[TikTok search] first user_info verified fields:', {
+            verified: rawSearchUsers[0]?.user_info?.verified,
+            custom_verify: rawSearchUsers[0]?.user_info?.custom_verify,
+            enterprise_verify_reason: rawSearchUsers[0]?.user_info?.enterprise_verify_reason,
+          });
+        }
+
+        // Normalize verified field from search results (API may use verified, custom_verify, etc.)
+        const searchUsers = rawSearchUsers.map((item: any) => {
+          const ui = item?.user_info || {};
+          const isVerified = !!(ui.verified || ui.custom_verify || ui.enterprise_verify_reason);
+          return { ...item, user_info: { ...ui, verified: isVerified } };
+        });
+
+        // If direct lookup succeeded, map camelCase fields to search-result snake_case shape
+        let directUser: any = null;
+        if (userInfoResponse.status === 'fulfilled') {
+          const u = userInfoResponse.value.data?.userInfo?.user;
+          const s = userInfoResponse.value.data?.userInfo?.stats;
+          if (u?.secUid) {
+            const isVerified = !!(u.verified || u.customVerify || u.enterpriseVerifyReason);
+            directUser = {
+              user_info: {
+                nickname: u.nickname,
+                unique_id: u.uniqueId,
+                sec_uid: u.secUid,
+                avatar_thumb: { url_list: [u.avatarThumb || u.avatarMedium || u.avatarLarger || ''] },
+                follower_count: s?.followerCount || 0,
+                signature: u.signature || '',
+                verified: isVerified,
+              },
+            };
+          }
+        }
+
+        // Dedupe: remove from search list if it matches the direct result
+        const deduped = directUser
+          ? searchUsers.filter(
+              (u: any) => u?.user_info?.sec_uid !== directUser.user_info.sec_uid
+            )
+          : searchUsers;
+
+        const tiktokUsers = directUser ? [directUser, ...deduped] : deduped;
+
+        res.json({ tiktokUsers });
 
     } catch (error) {
-        console.error('Error fetching data from external APIs:', error);
-        res.status(500).json({ message: 'Failed to fetch data from external APIs' });
+        const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
+      console.error('Error fetching data from external APIs:', errDetail);
+      res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
     }
 };
 
@@ -98,38 +142,24 @@ export const fetchPostsById = async (secUid: string) => {
 };
 
 export const fetchPostsReplies = async (postIds: string[]) => {
-  try {
-    let allReplies: string[] = [];
+  if (!tiktokPostRepliesApiUrl || !postIds?.length) return '';
+  let allReplies: string[] = [];
 
-    for (let postId of postIds) {
-        const tiktokParams = {
-        videoId: postId,
-        count: 50,
-        cursor: 0
-        };
-
-        
-        if (!tiktokPostRepliesApiUrl) {
-            return;
-        }
-        const tiktokResponse = await axios.get(tiktokPostRepliesApiUrl, {
+  for (const postId of postIds) {
+    try {
+      const tiktokResponse = await axios.get(tiktokPostRepliesApiUrl, {
         headers: tiktokHeaders,
-        params: tiktokParams,
-        });
-
-        const replies = tiktokResponse?.data?.comments || [];
-        const replyTexts = replies.map((comment: any) => comment.text);
-
-        allReplies = [...allReplies, ...replyTexts];
+        params: { videoId: postId, count: 50, cursor: 0 },
+      });
+      const comments = tiktokResponse?.data?.comments || tiktokResponse?.data?.data?.comments || [];
+      const texts = comments.map((c: any) => c.text || c.comment_text || '').filter(Boolean);
+      allReplies = [...allReplies, ...texts];
+    } catch {
+      // skip posts with no accessible comments
     }
-
-    const combinedPostText = allReplies.join(' ');
-
-    return combinedPostText;
-  } catch (error) {
-    console.error('Error fetching tiktok post replies:', error);
-    throw new Error('Failed to fetch tiktok post replies');
   }
+
+  return allReplies.join(' ');
 };
 
 export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise<void> => {
@@ -149,8 +179,9 @@ export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise
 
       res.json(Result);  
     } catch (error) {
-      console.error('Error fetching data from external APIs:', error);
-      res.status(500).json({ message: 'Failed to fetch data from external APIs' });
+      const errDetail = error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Unknown error';
+      console.error('Error fetching data from external APIs:', errDetail);
+      res.status(500).json({ message: 'Failed to fetch data from external APIs: ' + errDetail });
     }
   };
 
@@ -163,26 +194,9 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
-    if (!userId) {
-      res.status(401).json({ message: 'User not authenticated' });
-      return;
-    }
-
-    const apiUrl = tiktokData;
-    if (!apiUrl) {
-      res.status(500).json({ message: 'API URL for Tiktok is not defined in .env' });
-      return;
-    }
-
-    const headers = {
-      ...tiktokHeaders,
-      'x-report-type': 'paid',
-      'x-report-platform': 'TikTok',
-    };
-
-    const response = await axios.get(`${apiUrl}?secUid=${secUid}&query=${query}`, { headers });
-    const data = response.data;
+    const postIds = (await fetchPostsById(secUid.toString())) || [];
+    const postReplies = (await fetchPostsReplies(postIds as string[])) || '';
+    const data = await analyzeAndCombinePaidData(postReplies, query.toString(), 'TikTok');
 
     if (!data) {
       res.status(404).json({ message: 'No data found for the given query' });
@@ -190,23 +204,18 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
     }
 
     const pdfBuffer = await generatePaidPdfReport(data);
+    const reportUrl = await saveReportAndGetUrl(pdfBuffer, `${query} - ${new Date().toISOString()}`, 'TikTok');
 
-    const report = new Report({
-      name: `${query} - ${new Date().toISOString()}`,
-      pdf: pdfBuffer,
-      user: userId,
-      platform: 'TikTok',
-      type: 'report',
-    });
-    await report.save();
+    const userEmail = (req.query.email as string) || "";
+    triggerGHLWorkflowSilent(userEmail, query.toString(), 'TikTok', reportUrl || undefined);
 
     res.setHeader('Content-Disposition', 'attachment; filename="reputation_report.pdf"');
     res.setHeader('Content-Type', 'application/pdf');
     res.end(pdfBuffer);
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching data or generating PDF:', error);
-    res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
+    res.status(500).json({ message: error?.message || 'Failed to generate PDF' });
   }
 };
 

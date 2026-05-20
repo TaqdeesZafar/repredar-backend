@@ -3,7 +3,8 @@ import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { generatePaidPdfReport } from '../utils/generatePdfReport';
 import { analyzeAndCombinePaidCrossPlatformData } from '../utils/getPaidReport';
-import Report from '../models/Report';
+import { triggerGHLWorkflowSilent } from '../utils/emailUtils';
+import { saveReportAndGetUrl } from '../utils/saveReport';
 
 
 
@@ -15,7 +16,7 @@ const facebookHeaders = {
 };
 
 const linkedinHeaders = {
-  'x-rapidapi-host': 'best-linkedin-scraper-api3.p.rapidapi.com',
+  'x-rapidapi-host': 'linkedin-data-api.p.rapidapi.com',
   'x-rapidapi-key': process.env.RAPID_API_KEY,
 };
 
@@ -31,20 +32,16 @@ const twitterHeaders = {
 
 const twitterTweetIdsApiUrl = process.env.TWITTER_TWEET_IDS_API_URL;
 const linkedinCompanyPostsApiUrl = process.env.LINKEDIN_COMPANY_POSTS_API_URL;
-const tiktokUserApi = process.env.TIKTOK_USER_POSTS_API_URL;
+const linkedinProfilePostsApiUrl = process.env.LINKEDIN_PROFILE_POSTS_API_URL;
 const tiktokPostsIdsApiUrl = process.env.TIKTOK_POSTS_IDS_API_URL;
-const facebookUserApi = process.env.FACEBOOK_USER_API_URL;
+const facebookSearchApiUrl = process.env.FACEBOOK_SEARCH_API_URL;
+const facebookSearchProfileUrl = process.env.FACEBOOK_SEARCH_PROFILE_URL;
 const facebookPostsIdsApiUrl = process.env.FACEBOOK_POSTS_IDS_API_URL;
-const facebookProfileDetailsApiUrl = process.env.FACEBOOK_PROFILE_DETAILS_API_URL;
 const facebookProfilePostsIdsApiUrl = process.env.FACEBOOK_PROFILE_POSTS_IDS_API_URL;
 
 const facebookPostRepliesApiUrl = process.env.FACEBOOK_POST_REPLIES_API_URL;
-const linkedinPostRepliesApiUrl = process.env.LINKEDIN_POST_REPLIES_API_URL;
 const tiktokPostRepliesApiUrl = process.env.TIKTOK_POST_REPLIES_API_URL;
 const twitterTweetRepliesApiUrl = process.env.TWITTER_TWEET_REPLIES_API_URL;
-
-const crossPlatformData = process.env.CROSS_PLATFORM_DATA_API_URL;
-const linkedinProfilePostsApiUrl = process.env.LINKEDIN_PROFILE_POSTS_API_URL;
 
 
 const extractTwitterScreenName = (url: string): string | null => {
@@ -101,29 +98,21 @@ const fetchInstagramPostsById = async (query: string): Promise<{ postIds: string
 };
 
 const fetchInstagramPostsReplies = async (postIds: string[]) => {
-  try {
-    let allReplies: string[] = [];
-    for (let postid of postIds) {
-      const InstagramParams = {
-        code_or_id_or_url: postid,
-      };
-      if (!instagramPostRepliesApiUrl) {
-        return '';
-      }
+  if (!instagramPostRepliesApiUrl || !postIds?.length) return '';
+  let allReplies: string[] = [];
+  for (const postid of postIds) {
+    try {
       const instagramResponse = await axios.get(instagramPostRepliesApiUrl, {
         headers: instagramHeaders,
-        params: InstagramParams,
+        params: { code_or_id_or_url: postid },
       });
-      const replies = instagramResponse.data.data.items;
-      const replyTexts = replies.map((post: any) => post.text);
-      allReplies = [...allReplies, ...replyTexts];
+      const replies = instagramResponse.data?.data?.items || [];
+      allReplies = [...allReplies, ...replies.map((p: any) => p.text).filter(Boolean)];
+    } catch {
+      // skip posts with no accessible comments
     }
-    const combinedPostText = allReplies.join(' ');
-    return combinedPostText;
-  } catch (error) {
-    console.error('Error fetching Instagram posts replies:', error);
-    throw new Error('Failed to fetch Instagram posts replies');
   }
+  return allReplies.join(' ');
 };
 
 
@@ -149,170 +138,98 @@ export const fetchPostsById = async (url: string, context?: { facebookType?: 'pa
     }
 
     else if (url.includes('linkedin.com')) {
-      if (isLinkedInCompanyURL(url)) {
-        // Existing company logic
-        const linkedinParams = { url };
-        const linkedinResponse = await axios.get(linkedinCompanyPostsApiUrl as string, {
-          headers: linkedinHeaders,
-          params: linkedinParams,
-        });
-        const postIds = linkedinResponse.data.data.map((posts: any) => posts.url);
-        const reactions = linkedinResponse.data.data.map((posts: any) => posts.reaction_types);
-        dictionary.linkedin = { postIds, reactions };
-      } else {
-        // New profile logic
-        if (!linkedinProfilePostsApiUrl) {
-          throw new Error("LinkedIn profile posts API URL is not defined");
-        }
-        console.log('is profile')
-        const linkedinProfileParams = { url, page: 1 };
-        const linkedinProfileResponse = await axios.get(linkedinProfilePostsApiUrl, {
-          headers: linkedinHeaders,
-          params: linkedinProfileParams,
-        });
-        const results = linkedinProfileResponse.data.data || [];
-        // Extract post URLs, reactions, and text
-        const postIds = results.map((post: any) => post.url);
-        const reactions = results.map((post: any) => {
-          if (post.reaction_types) {
-            return post.reaction_types
-              .map((reaction: any) => `${reaction.type} (${reaction.total})`)
-              .join(', ');
+      const profileType = isLinkedInCompanyURL(url) ? 'company' : 'person';
+      const usernameMatch = url.match(/\/(company|in)\/([^/?#]+)/);
+      const username = usernameMatch ? usernameMatch[2] : null;
+      if (username) {
+        const postsUrl = profileType === 'company' ? linkedinCompanyPostsApiUrl : linkedinProfilePostsApiUrl;
+        if (postsUrl) {
+          try {
+            const response = await axios.get(postsUrl, {
+              headers: linkedinHeaders,
+              params: profileType === 'company' ? { username, start: 0 } : { username },
+            });
+            const posts = response.data?.data || [];
+            const urns = posts.map((p: any) => p.urn).filter(Boolean);
+            dictionary.linkedin = { urns, profileType };
+          } catch {
+            // LinkedIn API may be unavailable — skip silently
           }
-          return "";
-        });
-        const texts = results.map((post: any) => post.text?.content || "");
-        // Store in the same structure as company for downstream compatibility, but include texts
-        dictionary.linkedin = { postIds, reactions, texts };
+        }
       }
     }
 
     else if (url.includes('tiktok.com')) {
       const tiktokScreenName = extractTikTokScreenName(url);
-      if (tiktokScreenName && tiktokUserApi) {
-        const tiktokUserParams = { uniqueId: tiktokScreenName };
-        const tiktokUserResponse = await axios.get(tiktokUserApi as string, {
+      if (tiktokScreenName && tiktokPostsIdsApiUrl) {
+        // Step 1: get secUid from username via /api/user/info
+        const userInfoResponse = await axios.get('https://tiktok-api23.p.rapidapi.com/api/user/info', {
           headers: tiktokHeaders,
-          params: tiktokUserParams,
+          params: { uniqueId: tiktokScreenName },
         });
-
-        const secUid = tiktokUserResponse.data.userInfo?.user.secUid;
+        const secUid = userInfoResponse.data?.userInfo?.user?.secUid;
         if (secUid) {
-          const tiktokParams = { secUid, count: 5, cursor: 0 };
-          const tiktokPostsResponse = await axios.get(tiktokPostsIdsApiUrl as string, {
+          // Step 2: get post IDs using secUid
+          const tiktokPostsResponse = await axios.get(tiktokPostsIdsApiUrl, {
             headers: tiktokHeaders,
-            params: tiktokParams,
+            params: { secUid, count: 5, cursor: 0 },
           });
-          const postIds = tiktokPostsResponse.data.data.itemList.map((post: any) => post.id);
+          const postIds = (tiktokPostsResponse.data?.data?.itemList || []).map((post: any) => post.id).filter(Boolean);
           dictionary.tiktok = { postIds };
         }
       }
     }
 
     else if (url.includes('facebook.com')) {
-      // Check if it's a profile or page based on context
       const isProfile = context?.facebookType === 'profile';
-      console.log('Facebook URL detected:', url);
-      console.log('Facebook context:', context);
-      console.log('Is profile:', isProfile);
-      
+      // Extract slug from URL (e.g. facebook.com/microsoft → "microsoft")
+      const urlSlug = url.replace(/\/$/, '').split('/').filter(Boolean).pop() || '';
+
       if (isProfile) {
-        console.log('Processing Facebook profile...');
-        // Handle Facebook profile
-        if (!facebookProfileDetailsApiUrl) {
-          console.error('Facebook profile details API URL is not defined');
-          throw new Error("Facebook profile details API URL is not defined");
+        if (!facebookSearchProfileUrl || !facebookProfilePostsIdsApiUrl) {
+          throw new Error('Facebook profile API URLs not configured');
         }
-        
-        const facebookProfileParams = { url };
-        console.log('Calling Facebook profile details API with params:', facebookProfileParams);
-        const facebookProfileResponse = await axios.get(facebookProfileDetailsApiUrl, {
-          headers: facebookHeaders,
-          params: facebookProfileParams,
+        const profileHeaders = { 'x-rapidapi-host': 'facebook-scraper-api4.p.rapidapi.com', 'x-rapidapi-key': process.env.RAPID_API_KEY };
+        const searchResp = await axios.get(facebookSearchProfileUrl, {
+          headers: profileHeaders,
+          params: { query: urlSlug },
         });
-        
-        console.log('Facebook profile details response:', facebookProfileResponse.data);
-        const profileData = facebookProfileResponse.data;
-        
-        // Check if profile is private
-        if (profileData.profile && profileData.profile.type === 'private_profile') {
-          console.log('Profile is private, throwing PRIVATE_PROFILE error');
-          throw new Error('PRIVATE_PROFILE');
-        }
-        
-        // Check if we have valid profile data
-        if (!profileData.profile.profile_id) {
-          console.error('Invalid profile data received:', profileData);
-          throw new Error('Invalid profile data received');
-        }
-        
-        console.log('Profile ID found:', profileData.profile.profile_id);
-        
-        // Fetch profile posts
-        if (!facebookProfilePostsIdsApiUrl) {
-          console.error('Facebook profile posts API URL is not defined');
-          throw new Error("Facebook profile posts API URL is not defined");
-        }
-        
-        const facebookProfilePostsParams = { profile_id: profileData.profile.profile_id };
-        console.log('Calling Facebook profile posts API with params:', facebookProfilePostsParams);
-        const facebookProfilePostsResponse = await axios.get(facebookProfilePostsIdsApiUrl, {
-          headers: facebookHeaders,
-          params: facebookProfilePostsParams,
+        const profileId = searchResp.data?.data?.items?.[0]?.facebook_id || searchResp.data?.data?.items?.[0]?.id;
+        if (!profileId) throw new Error('PRIVATE_PROFILE');
+
+        const postsResp = await axios.get(facebookProfilePostsIdsApiUrl, {
+          headers: profileHeaders,
+          params: { profile_id: profileId },
         });
-        
-        console.log('Facebook profile posts response:', facebookProfilePostsResponse.data);
-        const results = facebookProfilePostsResponse.data.results || [];
-        console.log('Profile posts results length:', results.length);
-        
-        // Check if results are empty (private or no posts)
-        if (results.length === 0) {
-          console.log('No posts found, profile might be private, throwing PRIVATE_PROFILE error');
-          throw new Error('PRIVATE_PROFILE');
-        }
-        
+        const results = postsResp.data?.results || [];
+        if (results.length === 0) throw new Error('PRIVATE_PROFILE');
+
         const postIds = results.map((post: any) => post.post_id);
-        const reactions = results.map((post: any) => {
-          if (post.reactions) {
-            return Object.entries(post.reactions)
-              .map(([reaction, count]) => `${reaction} (${count})`)
-              .join(', ');
-          }
-          return "";
-        });
-        
-        console.log('Profile postIds:', postIds);
-        console.log('Profile reactions:', reactions);
+        const reactions = results.map((post: any) =>
+          post.reactions ? Object.entries(post.reactions).map(([r, c]) => `${r} (${c})`).join(', ') : ''
+        );
         dictionary.facebook = { postIds, reactions };
       } else {
-        console.log('Processing Facebook page...');
-        // Handle Facebook page (existing logic)
-        const facebookUserParams = { url };
-        const facebookUserResponse = await axios.get(facebookUserApi as string, {
-          headers: facebookHeaders,
-          params: facebookUserParams,
-        });
-        const pageId = facebookUserResponse.data.page_id;
-        if (pageId) {
-          const facebookParams = { page_id: pageId };
-          const facebookPostsResponse = await axios.get(facebookPostsIdsApiUrl as string, {
-            headers: facebookHeaders,
-            params: facebookParams,
-          });
-
-          const results = facebookPostsResponse.data.results || [];
-          const postIds = results.map((post: any) => post.post_id);
-          const reactions = results.map((post: any) => {
-            if (post.reactions) {
-              return Object.entries(post.reactions)
-                .map(([reaction, count]) => `${reaction} (${count})`)
-                .join(', ');
-            }
-            return "";
-          });
-
-          dictionary.facebook = { postIds, reactions };
+        if (!facebookSearchApiUrl || !facebookPostsIdsApiUrl) {
+          throw new Error('Facebook page API URLs not configured');
         }
+        const searchResp = await axios.get(facebookSearchApiUrl, {
+          headers: facebookHeaders,
+          params: { query: urlSlug },
+        });
+        const pageId = searchResp.data?.results?.[0]?.facebook_id;
+        if (!pageId) throw new Error('Could not resolve Facebook page ID from URL');
+
+        const postsResp = await axios.get(facebookPostsIdsApiUrl, {
+          headers: facebookHeaders,
+          params: { page_id: pageId },
+        });
+        const results = postsResp.data?.results || [];
+        const postIds = results.map((post: any) => post.post_id);
+        const reactions = results.map((post: any) =>
+          post.reactions ? Object.entries(post.reactions).map(([r, c]) => `${r} (${c})`).join(', ') : ''
+        );
+        dictionary.facebook = { postIds, reactions };
       }
     }
 
@@ -339,45 +256,43 @@ export const fetchReplies = async (data: any): Promise<any> => {
 
     if (data.twitter && data.twitter.twitter && data.twitter.twitter.length > 0 && twitterTweetRepliesApiUrl) {
       let allReplies: string[] = [];
-      for (let tweetId of data.twitter.twitter) { 
-        const twitterParams = { id: tweetId };
-
-        const twitterResponse = await axios.get(twitterTweetRepliesApiUrl, {
-          headers: twitterHeaders,
-          params: twitterParams,
-        });
-
-        const replies = twitterResponse.data.timeline.map((tweet: any) => tweet.text);
-        allReplies = [...allReplies, ...replies];
+      for (const tweetId of data.twitter.twitter) {
+        try {
+          const twitterResponse = await axios.get(twitterTweetRepliesApiUrl, {
+            headers: twitterHeaders,
+            params: { id: tweetId },
+          });
+          const replies = (twitterResponse.data?.timeline || []).map((tweet: any) => tweet.text || '').filter(Boolean);
+          allReplies = [...allReplies, ...replies];
+        } catch {
+          // skip tweets with no accessible replies
+        }
       }
       dictionary.twitter = allReplies.join(' ');
     }
 
-    if (data.linkedin && data.linkedin.linkedin && data.linkedin.linkedin.postIds && data.linkedin.linkedin.reactions) {
-      let allReplies: string[] = [];
-      let allReactions: string[] = [];
-      const { postIds, reactions } = data.linkedin.linkedin;
-
-      for (let i = 0; i < postIds.length; i++) {
-        const postId = postIds[i];
-        const linkedinParams = { url: postId, page: 1, sort_order: "REVERSE_CHRONOLOGICAL" };
-
-        const linkedinResponse = await axios.get(linkedinPostRepliesApiUrl as string, {
-          headers: linkedinHeaders,
-          params: linkedinParams,
-        });
-
-        const replies = linkedinResponse?.data?.data || [];
-        const replyTexts = replies.map((comment: any) => comment.text.content);
-        allReplies = [...allReplies, ...replyTexts];
-
-        if (reactions[i]) {
-          allReactions = [...allReactions, ...reactions[i]];
+    if (data.linkedin && data.linkedin.linkedin && data.linkedin.linkedin.urns) {
+      const { urns, profileType } = data.linkedin.linkedin;
+      const commentsUrl = profileType === 'company'
+        ? process.env.LINKEDIN_COMPANY_POST_COMMENTS_API_URL
+        : process.env.LINKEDIN_PROFILE_POST_COMMENTS_API_URL;
+      let allComments: string[] = [];
+      if (commentsUrl) {
+        for (const urn of urns) {
+          try {
+            const response = await axios.get(commentsUrl, {
+              headers: linkedinHeaders,
+              params: { urn, sort: 'mostRelevant', page: 1 },
+            });
+            const comments = response.data?.data || [];
+            const texts = comments.map((c: any) => c.comment || c.text?.content || c.text || '').filter(Boolean);
+            allComments = [...allComments, ...texts];
+          } catch {
+            // skip posts with no accessible comments
+          }
         }
       }
-
-      const combinedText = [...allReplies, ...allReactions].join(' ');
-      dictionary.linkedin = combinedText;
+      dictionary.linkedin = allComments.join(' ');
     }
 
     if (data.tiktok && data.tiktok.tiktok && data.tiktok.tiktok.postIds && data.tiktok.tiktok.postIds.length > 0) {
@@ -529,26 +444,26 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const userId = (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id;
-    if (!userId) {
-      res.status(401).json({ message: 'User not authenticated' });
-      return;
+    const platformData: { [key: string]: any } = {};
+    if (twitter) { platformData.twitter = await fetchPostsById(twitter as string); }
+    if (linkedin) { platformData.linkedin = await fetchPostsById(linkedin as string); }
+    if (tiktok) { platformData.tiktok = await fetchPostsById(tiktok as string); }
+    if (facebook) {
+      const facebookType = req.query.facebookType as 'page' | 'profile' | undefined;
+      platformData.facebook = await fetchPostsById(facebook as string, { facebookType });
+    }
+    if (instagram) {
+      const formattedQuery = (instagram as string).replace(/^@/, '');
+      const { postIds, isPrivate } = await fetchInstagramPostsById(formattedQuery);
+      if (isPrivate) {
+        res.status(404).json({ message: 'The profile is private or has no accessible posts', error: 'PRIVATE_PROFILE' });
+        return;
+      }
+      const postReplies = await fetchInstagramPostsReplies(postIds);
+      platformData.instagram = { instagram: { postIds, postReplies } };
     }
 
-    const queryParams: string[] = [];
-    if (twitter) queryParams.push(`twitter=${twitter}`);
-    if (linkedin) queryParams.push(`linkedin=${linkedin}`);
-    if (tiktok) queryParams.push(`tiktok=${tiktok}`);
-    if (facebook) queryParams.push(`facebook=${facebook}`);
-    if (instagram) queryParams.push(`instagram=${instagram}`);
-    if (req.query.facebookType) queryParams.push(`facebookType=${req.query.facebookType}`);
-
-    const queryString = queryParams.join('&');
-    const apiUrl = crossPlatformData;
-    if (!apiUrl) {
-      res.status(500).json({ message: 'API URL is not defined in .env' });
-      return;
-    }
+    const dictionary = await fetchReplies(platformData);
 
     const selectedPlatforms: string[] = [];
     if (twitter) selectedPlatforms.push('Twitter');
@@ -557,14 +472,7 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
     if (facebook) selectedPlatforms.push('Facebook');
     if (instagram) selectedPlatforms.push('Instagram');
 
-    const headers = {
-      'x-report-type': 'paid',
-      'x-report-platform': selectedPlatforms.join(', '),
-      ...(req.query.facebookType && { 'x-facebook-type': req.query.facebookType as string })
-    };
-
-    const response = await axios.get(`${apiUrl}?${queryString}&query=${query}`, { headers });
-    const data = response.data;
+    const data = await analyzeAndCombinePaidCrossPlatformData(dictionary, query as string, selectedPlatforms.join(', '));
 
     if (!data) {
       res.status(404).json({ message: 'No data found for the given query' });
@@ -572,36 +480,21 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
     }
 
     const pdfBuffer = await generatePaidPdfReport(data);
+    const reportUrl = await saveReportAndGetUrl(pdfBuffer, `${query} - ${new Date().toISOString()}`, 'Cross Platform');
 
-    const report = new Report({
-      name: `${query} - ${new Date().toISOString()}`,
-      pdf: pdfBuffer,
-      user: userId,
-      platform: 'Cross Platform',
-      type: 'report',
-    });
-    await report.save();
+    const userEmail = (req.query.email as string) || "";
+    triggerGHLWorkflowSilent(userEmail, (query as string) || '', 'Cross Platform', reportUrl || undefined);
 
     res.setHeader('Content-Disposition', 'attachment; filename="reputation_report.pdf"');
     res.setHeader('Content-Type', 'application/pdf');
     res.end(pdfBuffer);
 
   } catch (error: any) {
-    if (error.response && error.response.status === 404 && error.response.data?.error === 'PRIVATE_PROFILE') {
-      res.status(404).json({
-        message: error.response.data.message,
-        error: error.response.data.error
-      });
-      return;
-    }
     if (error.message === 'PRIVATE_PROFILE') {
-      res.status(404).json({
-        message: 'The profile you are trying to fetch is set to private or has no accessible posts',
-        error: 'PRIVATE_PROFILE'
-      });
+      res.status(404).json({ message: 'The profile is private or has no accessible posts', error: 'PRIVATE_PROFILE' });
       return;
     }
     console.error('Error fetching data or generating PDF:', error);
-    res.status(500).json({ message: 'Failed to fetch data or generate PDF' });
+    res.status(500).json({ message: error?.message || 'Failed to generate PDF' });
   }
 }; 
