@@ -9,54 +9,68 @@ import { saveReportAndGetUrl } from '../utils/saveReport';
 dotenv.config();
 
 const linkedinHeaders = {
-  'x-rapidapi-host': 'linkedin-data-api.p.rapidapi.com',
+  'x-rapidapi-host': 'fresh-linkedin-profile-data.p.rapidapi.com',
   'x-rapidapi-key': process.env.RAPID_API_KEY,
 };
 
-const linkedinSearchApiUrl = process.env.LINKEDIN_SEARCH_API_URL;
-const linkedinCompanyPostsApiUrl = process.env.LINKEDIN_COMPANY_POSTS_API_URL;
-const linkedinProfilePostsApiUrl = process.env.LINKEDIN_PROFILE_POSTS_API_URL;
-const linkedinCompanyPostCommentsApiUrl = process.env.LINKEDIN_COMPANY_POST_COMMENTS_API_URL;
-const linkedinProfilePostCommentsApiUrl = process.env.LINKEDIN_PROFILE_POST_COMMENTS_API_URL;
+const BASE = 'https://fresh-linkedin-profile-data.p.rapidapi.com';
 
-// Parse a LinkedIn URL or plain username into { type, username }
-function parseLinkedIn(input: string): { type: 'company' | 'person'; username: string } {
-  const companyMatch = input.match(/\/company\/([^/?#]+)/);
-  if (companyMatch) return { type: 'company', username: companyMatch[1] };
-  const personMatch = input.match(/\/in\/([^/?#]+)/);
-  if (personMatch) return { type: 'person', username: personMatch[1] };
-  // Plain username or keyword â€” default to company
-  return { type: 'company', username: input.replace(/\/$/, '') };
+// Parse a LinkedIn URL or plain keyword into { type, linkedinUrl }
+function parseLinkedIn(input: string): { type: 'company' | 'person'; linkedinUrl: string } {
+  if (input.includes('/company/')) return { type: 'company', linkedinUrl: input };
+  if (input.includes('/in/')) return { type: 'person', linkedinUrl: input };
+  // plain keyword — treat as company search keyword, not a URL
+  return { type: 'company', linkedinUrl: '' };
 }
 
 export const fetchUsers = async (req: Request, res: Response): Promise<void> => {
   try {
     const { query } = req.query;
-
     if (!query) {
       res.status(400).json({ message: 'Missing required query parameter: query' });
       return;
     }
 
-    if (!linkedinSearchApiUrl) {
-      res.status(500).json({ message: 'LinkedIn search API URL not defined in .env' });
-      return;
+    const keyword = query.toString();
+
+    // Try company search by domain/keyword and person enrichment in parallel
+    const [companyRes, personRes] = await Promise.allSettled([
+      axios.get(`${BASE}/get-company-by-domain`, {
+        headers: linkedinHeaders,
+        params: { domain: keyword },
+      }),
+      axios.post(`${BASE}/search-employees`, {
+        keywords: keyword,
+        limit: 10,
+      }, { headers: linkedinHeaders }),
+    ]);
+
+    let linkedinUsers: any[] = [];
+
+    if (companyRes.status === 'fulfilled') {
+      const c = companyRes.value.data?.data || companyRes.value.data;
+      if (c && c.linkedin_url) {
+        linkedinUsers.push({
+          full_name: c.name || keyword,
+          url: c.linkedin_url || '',
+          profile_picture: c.logo ? [{ url: c.logo }] : [],
+          headline: c.description || c.industry || '',
+          type: 'Company',
+        });
+      }
     }
 
-    const linkedinResponse = await axios.get(linkedinSearchApiUrl, {
-      headers: linkedinHeaders,
-      params: { keywords: query.toString() },
-    });
-
-    const rawUsers = linkedinResponse.data?.data || linkedinResponse.data?.items || linkedinResponse.data?.results || [];
-
-    // Normalise field names â€” API may return profileUrl or url
-    const linkedinUsers = rawUsers.map((u: any) => ({
-      ...u,
-      url: u.url || u.profileUrl || u.profile_url || u.linkedin_url || '',
-      profile_picture: u.profile_picture || (u.profilePicture ? [{ url: u.profilePicture }] : []),
-      full_name: u.full_name || u.fullName || u.name || '',
-    }));
+    if (personRes.status === 'fulfilled') {
+      const people = personRes.value.data?.data || personRes.value.data?.items || [];
+      const mapped = people.slice(0, 8).map((u: any) => ({
+        full_name: u.full_name || u.name || '',
+        url: u.linkedin_url || u.url || '',
+        profile_picture: u.profile_picture ? [{ url: u.profile_picture }] : [],
+        headline: u.headline || u.title || '',
+        type: 'Person',
+      }));
+      linkedinUsers = [...linkedinUsers, ...mapped];
+    }
 
     res.json({ linkedinUsers });
   } catch (error: any) {
@@ -65,20 +79,26 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
   }
 };
 
-// Returns { urns, profileType } for a given LinkedIn URL or username
-export const fetchPostsById = async (urlOrUsername: string): Promise<{ urns: string[]; profileType: 'company' | 'person' }> => {
-  const { type, username } = parseLinkedIn(urlOrUsername);
-
-  const postsUrl = type === 'company' ? linkedinCompanyPostsApiUrl : linkedinProfilePostsApiUrl;
-  if (!postsUrl) return { urns: [], profileType: type };
+// Fetch post URNs for a LinkedIn URL
+export const fetchPostsById = async (linkedinUrl: string): Promise<{ urns: string[]; profileType: 'company' | 'person' }> => {
+  const { type } = parseLinkedIn(linkedinUrl);
 
   try {
-    const response = await axios.get(postsUrl, {
-      headers: linkedinHeaders,
-      params: type === 'company' ? { username, start: 0 } : { username },
-    });
-    const posts = response.data?.data || [];
-    const urns = posts.map((p: any) => p.urn).filter(Boolean);
+    let posts: any[] = [];
+    if (type === 'company') {
+      const res = await axios.get(`${BASE}/get-company-posts`, {
+        headers: linkedinHeaders,
+        params: { linkedin_url: linkedinUrl, start: 0, sort_by: 'top' },
+      });
+      posts = res.data?.data || [];
+    } else {
+      const res = await axios.get(`${BASE}/get-profile-posts`, {
+        headers: linkedinHeaders,
+        params: { linkedin_url: linkedinUrl, type: 'posts' },
+      });
+      posts = res.data?.data || [];
+    }
+    const urns = posts.map((p: any) => p.urn).filter(Boolean).slice(0, 5);
     return { urns, profileType: type };
   } catch (error: any) {
     console.error('Error fetching LinkedIn posts:', error);
@@ -86,28 +106,21 @@ export const fetchPostsById = async (urlOrUsername: string): Promise<{ urns: str
   }
 };
 
-export const fetchPostsReplies = async (urns: string[], profileType: 'company' | 'person'): Promise<string> => {
-  const commentsUrl = profileType === 'company'
-    ? linkedinCompanyPostCommentsApiUrl
-    : linkedinProfilePostCommentsApiUrl;
-
-  if (!commentsUrl || !urns.length) return '';
-
+export const fetchPostsReplies = async (urns: string[], _profileType: 'company' | 'person'): Promise<string> => {
+  if (!urns.length) return '';
   let allComments: string[] = [];
 
   for (const urn of urns) {
     try {
-      const response = await axios.get(commentsUrl, {
+      const res = await axios.get(`${BASE}/get-post-comments`, {
         headers: linkedinHeaders,
-        params: { urn, sort: 'mostRelevant', page: 1 },
+        params: { urn, sort_by: 'Most relevant', page: 1 },
       });
-      const comments = response.data?.data || [];
-      const texts = comments
-        .map((c: any) => c.comment || c.text?.content || c.text || '')
-        .filter(Boolean);
+      const comments = res.data?.data || [];
+      const texts = comments.map((c: any) => c.comment || c.text || '').filter(Boolean);
       allComments = [...allComments, ...texts];
     } catch {
-      // skip posts with no accessible comments
+      // skip inaccessible posts
     }
   }
 
@@ -117,18 +130,14 @@ export const fetchPostsReplies = async (urns: string[], profileType: 'company' |
 export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise<void> => {
   try {
     const { url, query } = req.query;
-
     if (!url || !query) {
       res.status(400).json({ message: 'Missing required query parameter: url / query' });
       return;
     }
     const platform = req.headers['x-report-platform'] as string;
-
     const { urns, profileType } = await fetchPostsById(url.toString());
     const postReplies = await fetchPostsReplies(urns, profileType);
-
     const Result = await analyzeAndCombinePaidData(postReplies, query.toString(), platform || 'LinkedIn');
-
     res.json(Result);
   } catch (error: any) {
     console.error('Error fetching LinkedIn data:', error);
@@ -139,7 +148,6 @@ export const fetchAndAnalyzePosts = async (req: Request, res: Response): Promise
 export const generateReport = async (req: Request, res: Response): Promise<void> => {
   try {
     const { url, query } = req.query;
-
     if (!url || !query) {
       res.status(400).json({ message: 'Missing required query parameter: url or query' });
       return;
@@ -168,4 +176,5 @@ export const generateReport = async (req: Request, res: Response): Promise<void>
     res.status(500).json({ message: error?.message || 'Failed to generate PDF' });
   }
 };
+
 
