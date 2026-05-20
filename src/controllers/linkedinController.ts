@@ -56,6 +56,7 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
           url,
           profile_picture: c.logo_url ? [{ url: c.logo_url }] : [],
           headline: c.tagline || (c.description || '').slice(0, 120) || (c.industries || [])[0] || '',
+          follower_count: c.follower_count || c.followers_count || 0,
           type: 'Company',
         });
       }
@@ -78,11 +79,15 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
           url,
           profile_picture: [],
           headline: post.poster_title || '',
+          follower_count: post.poster_follower_count || 0,
           type: 'Person',
         });
         if (linkedinUsers.length >= 10) break;
       }
     }
+
+    // Sort by follower count descending — most popular first
+    linkedinUsers.sort((a, b) => (b.follower_count || 0) - (a.follower_count || 0));
 
     res.json({ linkedinUsers });
   } catch (error: any) {
@@ -121,6 +126,9 @@ export const enrichUsers = async (req: Request, res: Response): Promise<void> =>
       profile_image_url: result.status === 'fulfilled'
         ? result.value.data?.data?.profile_image_url || ''
         : '',
+      follower_count: result.status === 'fulfilled'
+        ? result.value.data?.data?.follower_count || result.value.data?.data?.followers_count || 0
+        : 0,
     }));
 
     res.json({ enriched });
