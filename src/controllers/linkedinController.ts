@@ -32,84 +32,57 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
     }
 
     const keyword = query.toString().trim();
-    const words = keyword.toLowerCase().split(/\s+/).filter(Boolean);
-    const slugNoSpace  = words.join('');                  // "taqdeeszafar"
-    const slugHyphen   = words.join('-');                 // "taqdees-zafar"
-    const slugDot      = words.join('.');                 // "taqdees.zafar"
-    const domain       = keyword.includes('.') ? keyword : `${slugNoSpace}.com`;
+    const domain = keyword.includes('.') ? keyword : `${keyword.toLowerCase().replace(/\s+/g, '')}.com`;
+    const kwLower = keyword.toLowerCase();
+    const kwWords = kwLower.split(/\s+/).filter(Boolean);
 
-    // Build candidate URLs to try in parallel
-    const personUrls = [
-      `https://www.linkedin.com/in/${slugHyphen}/`,
-      `https://www.linkedin.com/in/${slugNoSpace}/`,
-      `https://www.linkedin.com/in/${slugDot}/`,
-    ];
-    const companyUrls = [
-      `https://www.linkedin.com/company/${slugHyphen}/`,
-      `https://www.linkedin.com/company/${slugNoSpace}/`,
-    ];
-
-    const enrichCall = (url: string) =>
-      axios.get(`${BASE}/enrich-lead`, {
-        headers: linkedinHeaders,
-        params: { linkedin_url: url, include_skills: false, include_certifications: false, include_profile_status: false, include_company_public_url: false },
-        timeout: 6000,
-      });
-
-    const companyCall = (url: string) =>
-      axios.get(`${BASE}/get-company-by-linkedinurl`, { headers: linkedinHeaders, params: { linkedin_url: url } });
-
-    const [domainRes, ...rest] = await Promise.allSettled([
+    // Run company domain lookup and post search in parallel
+    const [domainRes, postsRes] = await Promise.allSettled([
       axios.get(`${BASE}/get-company-by-domain`, { headers: linkedinHeaders, params: { domain } }),
-      ...personUrls.map(enrichCall),
-      ...companyUrls.map(companyCall),
+      axios.post(`${BASE}/search-posts`, { search_keywords: keyword, sort_by: 'Latest', page: 1 }, { headers: linkedinHeaders }),
     ]);
-
-    const personResults = rest.slice(0, personUrls.length);
-    const companyResults = rest.slice(personUrls.length);
 
     let linkedinUsers: any[] = [];
     const seenUrls = new Set<string>();
 
-    const addCompany = (c: any, fallbackUrl: string) => {
-      if (!c || !(c.company_name || c.name)) return;
-      const url = c.linkedin_url || fallbackUrl;
-      if (seenUrls.has(url)) return;
-      seenUrls.add(url);
-      linkedinUsers.push({
-        full_name: c.company_name || c.name,
-        url,
-        profile_picture: c.logo_url ? [{ url: c.logo_url }] : [],
-        headline: c.tagline || (c.description || '').slice(0, 120) || (c.industries || [])[0] || '',
-        type: 'Company',
-      });
-    };
+    // Company from domain lookup
+    if (domainRes.status === 'fulfilled') {
+      const c = domainRes.value.data?.data || domainRes.value.data;
+      if (c && (c.company_name || c.name)) {
+        const url = c.linkedin_url || '';
+        seenUrls.add(url);
+        linkedinUsers.push({
+          full_name: c.company_name || c.name,
+          url,
+          profile_picture: c.logo_url ? [{ url: c.logo_url }] : [],
+          headline: c.tagline || (c.description || '').slice(0, 120) || (c.industries || [])[0] || '',
+          type: 'Company',
+        });
+      }
+    }
 
-    const addPerson = (p: any, url: string) => {
-      if (!p?.full_name) return;
-      if (seenUrls.has(url)) return;
-      seenUrls.add(url);
-      linkedinUsers.push({
-        full_name: p.full_name,
-        url,
-        profile_picture: p.profile_image_url ? [{ url: p.profile_image_url }] : [],
-        headline: p.headline || p.title || '',
-        type: 'Person',
-      });
-    };
-
-    // Domain company lookup
-    if (domainRes.status === 'fulfilled') addCompany(domainRes.value.data?.data || domainRes.value.data, companyUrls[0]);
-
-    // Person enrichment results
-    personResults.forEach((r, i) => {
-      if (r.status === 'fulfilled') addPerson(r.value.data?.data, personUrls[i]);
-    });
-
-    // Direct company URL results
-    companyResults.forEach((r, i) => {
-      if (r.status === 'fulfilled') addCompany(r.value.data?.data || r.value.data, companyUrls[i]);
-    });
+    // People from post authors — filter by name relevance only
+    if (postsRes.status === 'fulfilled') {
+      const posts = postsRes.value.data?.data || [];
+      const seen = new Set<string>();
+      for (const post of posts) {
+        const url = post.poster_linkedin_url || '';
+        if (!url || seen.has(url) || seenUrls.has(url)) continue;
+        const posterName = (post.poster_name || '').toLowerCase();
+        // Keep only if every word in the query appears in the poster's name
+        const isRelevant = kwWords.every(w => posterName.includes(w));
+        if (!isRelevant) continue;
+        seen.add(url);
+        linkedinUsers.push({
+          full_name: post.poster_name || '',
+          url,
+          profile_picture: [],
+          headline: post.poster_title || '',
+          type: 'Person',
+        });
+        if (linkedinUsers.length >= 10) break;
+      }
+    }
 
     res.json({ linkedinUsers });
   } catch (error: any) {
