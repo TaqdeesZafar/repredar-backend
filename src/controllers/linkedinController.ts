@@ -32,26 +32,48 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
     }
 
     const keyword = query.toString().trim();
-    const slug = keyword.toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9-]/g, '');
-    const domain = keyword.includes('.') ? keyword : `${slug}.com`;
+    const words = keyword.toLowerCase().split(/\s+/).filter(Boolean);
+    const slugNoSpace  = words.join('');                  // "taqdeeszafar"
+    const slugHyphen   = words.join('-');                 // "taqdees-zafar"
+    const slugDot      = words.join('.');                 // "taqdees.zafar"
+    const domain       = keyword.includes('.') ? keyword : `${slugNoSpace}.com`;
 
-    // Try company by domain, direct company URL, direct person URL, and post search — all in parallel
-    const companyUrl = `https://www.linkedin.com/company/${slug}/`;
-    const personUrl  = `https://www.linkedin.com/in/${slug}/`;
+    // Build candidate URLs to try in parallel
+    const personUrls = [
+      `https://www.linkedin.com/in/${slugHyphen}/`,
+      `https://www.linkedin.com/in/${slugNoSpace}/`,
+      `https://www.linkedin.com/in/${slugDot}/`,
+    ];
+    const companyUrls = [
+      `https://www.linkedin.com/company/${slugHyphen}/`,
+      `https://www.linkedin.com/company/${slugNoSpace}/`,
+    ];
 
-    const [domainRes, companyUrlRes, personUrlRes, postsRes] = await Promise.allSettled([
+    const enrichCall = (url: string) =>
+      axios.get(`${BASE}/enrich-lead`, {
+        headers: linkedinHeaders,
+        params: { linkedin_url: url, include_skills: false, include_certifications: false, include_profile_status: false, include_company_public_url: false },
+        timeout: 6000,
+      });
+
+    const companyCall = (url: string) =>
+      axios.get(`${BASE}/get-company-by-linkedinurl`, { headers: linkedinHeaders, params: { linkedin_url: url } });
+
+    const [domainRes, ...rest] = await Promise.allSettled([
       axios.get(`${BASE}/get-company-by-domain`, { headers: linkedinHeaders, params: { domain } }),
-      axios.get(`${BASE}/get-company-by-linkedinurl`, { headers: linkedinHeaders, params: { linkedin_url: companyUrl } }),
-      axios.get(`${BASE}/enrich-lead`, { headers: linkedinHeaders, params: { linkedin_url: personUrl, include_skills: false, include_certifications: false, include_profile_status: false, include_company_public_url: false }, timeout: 5000 }),
-      axios.post(`${BASE}/search-posts`, { search_keywords: keyword, sort_by: 'Latest', page: 1 }, { headers: linkedinHeaders }),
+      ...personUrls.map(enrichCall),
+      ...companyUrls.map(companyCall),
     ]);
+
+    const personResults = rest.slice(0, personUrls.length);
+    const companyResults = rest.slice(personUrls.length);
 
     let linkedinUsers: any[] = [];
     const seenUrls = new Set<string>();
 
-    const addCompany = (c: any) => {
+    const addCompany = (c: any, fallbackUrl: string) => {
       if (!c || !(c.company_name || c.name)) return;
-      const url = c.linkedin_url || companyUrl;
+      const url = c.linkedin_url || fallbackUrl;
       if (seenUrls.has(url)) return;
       seenUrls.add(url);
       linkedinUsers.push({
@@ -63,48 +85,31 @@ export const fetchUsers = async (req: Request, res: Response): Promise<void> => 
       });
     };
 
-    // Domain lookup first (most reliable for companies)
-    if (domainRes.status === 'fulfilled') addCompany(domainRes.value.data?.data || domainRes.value.data);
-    // Direct company URL lookup
-    if (companyUrlRes.status === 'fulfilled') addCompany(companyUrlRes.value.data?.data || companyUrlRes.value.data);
+    const addPerson = (p: any, url: string) => {
+      if (!p?.full_name) return;
+      if (seenUrls.has(url)) return;
+      seenUrls.add(url);
+      linkedinUsers.push({
+        full_name: p.full_name,
+        url,
+        profile_picture: p.profile_image_url ? [{ url: p.profile_image_url }] : [],
+        headline: p.headline || p.title || '',
+        type: 'Person',
+      });
+    };
 
-    // Direct person URL lookup
-    if (personUrlRes.status === 'fulfilled') {
-      const p = personUrlRes.value.data?.data;
-      if (p?.full_name) {
-        seenUrls.add(personUrl);
-        linkedinUsers.push({
-          full_name: p.full_name,
-          url: personUrl,
-          profile_picture: p.profile_image_url ? [{ url: p.profile_image_url }] : [],
-          headline: p.headline || p.title || '',
-          type: 'Person',
-        });
-      }
-    }
+    // Domain company lookup
+    if (domainRes.status === 'fulfilled') addCompany(domainRes.value.data?.data || domainRes.value.data, companyUrls[0]);
 
-    // Post authors — only add if their name/title closely matches the keyword (relevance filter)
-    if (postsRes.status === 'fulfilled') {
-      const posts = postsRes.value.data?.data || [];
-      const kw = keyword.toLowerCase();
-      for (const post of posts) {
-        const url = post.poster_linkedin_url || '';
-        if (!url || seenUrls.has(url)) continue;
-        const name = (post.poster_name || '').toLowerCase();
-        const title = (post.poster_title || '').toLowerCase();
-        // Only include if poster name or title contains the keyword
-        if (!name.includes(kw) && !title.includes(kw)) continue;
-        seenUrls.add(url);
-        linkedinUsers.push({
-          full_name: post.poster_name || '',
-          url,
-          profile_picture: [],
-          headline: post.poster_title || '',
-          type: 'Person',
-        });
-        if (linkedinUsers.length >= 10) break;
-      }
-    }
+    // Person enrichment results
+    personResults.forEach((r, i) => {
+      if (r.status === 'fulfilled') addPerson(r.value.data?.data, personUrls[i]);
+    });
+
+    // Direct company URL results
+    companyResults.forEach((r, i) => {
+      if (r.status === 'fulfilled') addCompany(r.value.data?.data || r.value.data, companyUrls[i]);
+    });
 
     res.json({ linkedinUsers });
   } catch (error: any) {
